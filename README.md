@@ -23,6 +23,8 @@ In the `__init__.py` program you can tweak some settings to your needs.
 # === Global configuration ===
 BUILD = "109"            # Build number
 workDir = "stencil"      # Working folder name
+front_copper_pads = True # Generate front copper pads
+back_copper_pads = False # Generate back copper pads
 min_mask_width = 0.40    # Minimum mask width (mm) between pads
 min_pad_size = 0.40      # Minimum pad size (mm) after shrinking
 pcbClearence = 0.15      # PCB clearance (mm) - moves outline outward from Edge.Cuts

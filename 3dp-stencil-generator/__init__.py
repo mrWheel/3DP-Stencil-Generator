@@ -5,11 +5,74 @@ import os
 
 
 # === Global configuration ===
-BUILD = "115"            # Build number
+BUILD = "117"            # Build number
 workDir = "stencil"      # Working folder name
+front_copper_pads = True # Generate front copper pads
+back_copper_pads = False # Generate back copper pads
 min_mask_width = 0.20    # Minimum mask width (mm) between pads
 min_pad_size = 0.40      # Minimum pad size (mm) after shrinking
 pcbClearence = 0.15      # PCB clearance (mm) - moves outline outward from Edge.Cuts
+
+import wx
+
+class StencilParametersDialog(wx.Dialog):
+    def __init__(self, parent):
+        super().__init__(parent, title="Stencil Generator Parameters")
+        
+        # Create the dialog layout
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        
+        # Front copper pads checkbox
+        self.front_copper_cb = wx.CheckBox(self, label="Generate front copper pads")
+        self.front_copper_cb.SetValue(front_copper_pads)  # default value
+        sizer.Add(self.front_copper_cb, 0, wx.ALL, 5)
+        
+        # Back copper pads checkbox
+        self.back_copper_cb = wx.CheckBox(self, label="Generate back copper pads")
+        self.back_copper_cb.SetValue(back_copper_pads)  # default value
+        sizer.Add(self.back_copper_cb, 0, wx.ALL, 5)
+        
+        # Minimum mask width
+        sizer.Add(wx.StaticText(self, label="Minimum mask width (mm):"), 0, wx.ALL, 5)
+        self.mask_width_ctrl = wx.TextCtrl(self, value=str(min_mask_width))
+        sizer.Add(self.mask_width_ctrl, 0, wx.ALL|wx.EXPAND, 5)
+        
+        # Minimum pad size
+        sizer.Add(wx.StaticText(self, label="Minimum pad size (mm):"), 0, wx.ALL, 5)
+        self.pad_size_ctrl = wx.TextCtrl(self, value=str(min_pad_size))
+        sizer.Add(self.pad_size_ctrl, 0, wx.ALL|wx.EXPAND, 5)
+        
+        # PCB clearance
+        sizer.Add(wx.StaticText(self, label="PCB clearance (mm):"), 0, wx.ALL, 5)
+        self.clearance_ctrl = wx.TextCtrl(self, value=str(pcbClearence))
+        sizer.Add(self.clearance_ctrl, 0, wx.ALL|wx.EXPAND, 5)
+        
+        # OK and Cancel buttons
+        btn_sizer = wx.StdDialogButtonSizer()
+        ok_btn = wx.Button(self, wx.ID_OK)
+        cancel_btn = wx.Button(self, wx.ID_CANCEL)
+        btn_sizer.AddButton(ok_btn)
+        btn_sizer.AddButton(cancel_btn)
+        btn_sizer.Realize()
+        sizer.Add(btn_sizer, 0, wx.ALL|wx.CENTER, 5)
+        
+        self.SetSizer(sizer)
+        self.Fit()
+    
+    def get_values(self):
+        """Return the values from the dialog"""
+        try:
+            return {
+                'front_copper_pads': self.front_copper_cb.GetValue(),
+                'back_copper_pads': self.back_copper_cb.GetValue(),
+                'min_mask_width': float(self.mask_width_ctrl.GetValue()),
+                'min_pad_size': float(self.pad_size_ctrl.GetValue()),
+                'pcb_clearance': float(self.clearance_ctrl.GetValue())
+            }
+        except ValueError:
+            wx.MessageBox("Please enter valid numbers for all numeric fields!", "Error")
+            return None
+
 
 
 class StencilGenerator(pcbnew.ActionPlugin):
@@ -20,6 +83,30 @@ class StencilGenerator(pcbnew.ActionPlugin):
         self.show_toolbar_button = True
         self.icon_file_name = os.path.join(
             os.path.dirname(__file__), "./icon.png")
+        
+    def show_parameters_dialog(self):
+        app = wx.App.Get()
+        if not app:
+            app = wx.App()
+        
+        dlg = StencilParametersDialog(None)
+        
+        if dlg.ShowModal() == wx.ID_OK:
+            values = dlg.get_values()
+            if values:
+                # Update global variables with user input
+                global front_copper_pads, back_copper_pads, min_mask_width, min_pad_size, pcbClearence
+                front_copper_pads = values['front_copper_pads']
+                back_copper_pads = values['back_copper_pads']
+                min_mask_width = values['min_mask_width']
+                min_pad_size = values['min_pad_size']
+                pcbClearence = values['pcb_clearance']
+                
+                dlg.Destroy()
+                return True  # User clicked OK
+        
+        dlg.Destroy()
+        return False  # User cancelled
 
     def Run(self):
         try:
@@ -41,6 +128,13 @@ class StencilGenerator(pcbnew.ActionPlugin):
     
             log(f"===== Plugin gestart - BUILD {BUILD} =====")
             log(f"Project directory: {project_dir}")
+
+            # Show parameter dialog first
+            log("Showing parameters dialog")
+            if not self.show_parameters_dialog():
+                log("Parameters dialog cancelled, exiting")
+                return  # User cancelled, exit
+
     
             base_filename = re.sub(r'\.[^.]*$', '', os.path.basename(project_file))
             output_filename = os.path.join(output_dir, f"{base_filename}_stencil.scad")
@@ -670,25 +764,39 @@ class StencilGenerator(pcbnew.ActionPlugin):
             center_x = bbox.GetCenter().x
             center_y = bbox.GetCenter().y
 
-        # Collect all SMD pads with their information
+        # Collect all SMD pads with their information, filtered by layer
         pads_info = []
         for module in board.GetFootprints():
             for pad in module.Pads():
                 if pad.GetAttribute() == pcbnew.PAD_ATTRIB_SMD:
-                    pos = pad.GetPosition()
-                    size = pad.GetSize()
-                    angle = pad.GetOrientation().AsDegrees()
-                    pads_info.append({
-                        'x': self.mm(pos.x - center_x),
-                        'y': self.mm(pos.y - center_y),
-                        'width': self.mm(size.x),
-                        'height': self.mm(size.y),
-                        'angle': angle,
-                        'pad': pad
-                    })
+                    # Check which copper layer(s) the pad is on
+                    pad_layers = pad.GetLayerSet()
+                    is_front_copper = pad_layers.Contains(pcbnew.F_Cu)
+                    is_back_copper = pad_layers.Contains(pcbnew.B_Cu)
+                    
+                    # Filter based on global configuration variables
+                    should_include = False
+                    if front_copper_pads and is_front_copper:
+                        should_include = True
+                    if back_copper_pads and is_back_copper:
+                        should_include = True
+                    
+                    # Only add pad if it matches the layer criteria
+                    if should_include:
+                        pos = pad.GetPosition()
+                        size = pad.GetSize()
+                        angle = pad.GetOrientation().AsDegrees()
+                        pads_info.append({
+                            'x': self.mm(pos.x - center_x),
+                            'y': self.mm(pos.y - center_y),
+                            'width': self.mm(size.x),
+                            'height': self.mm(size.y),
+                            'angle': angle,
+                            'pad': pad
+                        })
 
         if not pads_info:
-            return "    // No SMD pads found\n"
+            return "    // No SMD pads found matching layer criteria\n"
 
         # Group pads that are close to each other
         pad_groups = self.find_pad_groups(pads_info)
