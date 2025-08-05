@@ -3,6 +3,14 @@ import re
 import datetime
 import os
 
+
+# === Global configuration ===
+BUILD = "105"            # Build number
+workDir = "stencil"      # Working folder name
+min_mask_width = 0.22    # Minimum mask width (mm) between pads
+pcbClearence = 0.1       # PCB clearance (mm) - moves outline outward from Edge.Cuts
+
+
 class StencilGenerator(pcbnew.ActionPlugin):
     def defaults(self):
         self.name = "3DP Stencil Generator"
@@ -21,16 +29,16 @@ class StencilGenerator(pcbnew.ActionPlugin):
                 raise RuntimeError("Geen board-bestand geladen")
     
             project_dir = os.path.dirname(project_file)
-            output_dir = os.path.join(project_dir, "stencil")
+            output_dir = os.path.join(project_dir, workDir)
             os.makedirs(output_dir, exist_ok=True)
     
             log_file = os.path.join(output_dir, "kicad_stencilgen_debug.log")
-    
+   
             def log(msg):
                 with open(log_file, "a", encoding="utf-8") as f:
                     f.write(f"{datetime.datetime.now()} - {msg}\n")
     
-            log("===== Plugin gestart - BUILD 100 =====")
+            log(f"===== Plugin gestart - BUILD {BUILD} =====")
             log(f"Project directory: {project_dir}")
     
             base_filename = re.sub(r'\.[^.]*$', '', os.path.basename(project_file))
@@ -417,7 +425,6 @@ class StencilGenerator(pcbnew.ActionPlugin):
         """Calculate pad dimensions constrained by minimum mask width"""
         import math
         
-        min_mask_width = 0.45  # mm - minimum mask width (hotend size)
         adjusted_pad = current_pad.copy()
         
         # Find nearby pads that might require mask constraints
@@ -567,7 +574,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
         try:
             project_file = board.GetFileName()
             project_dir = os.path.dirname(project_file)
-            output_dir = os.path.join(project_dir, "stencil")
+            output_dir = os.path.join(project_dir, workDir)
             log_file = os.path.join(output_dir, "all_layers_debug.log")
             
             with open(log_file, "w", encoding="utf-8") as f:
