@@ -5,9 +5,9 @@ import os
 
 
 # === Global configuration ===
-BUILD = "109"            # Build number
+BUILD = "112"            # Build number
 workDir = "stencil"      # Working folder name
-min_mask_width = 0.40    # Minimum mask width (mm) between pads
+min_mask_width = 0.50    # Minimum mask width (mm) between pads
 pcbClearence = 0.15      # PCB clearance (mm) - moves outline outward from Edge.Cuts
 
 
@@ -422,66 +422,132 @@ class StencilGenerator(pcbnew.ActionPlugin):
         
         return proj_x + proj_y
 
-
-    def calculate_mask_constrained_pad(self, current_pad, all_pads, current_index):
-        """Calculate pad dimensions constrained by minimum mask width"""
+    def find_pad_groups(self, all_pads):
+        """Group pads that are close to each other and need uniform shrinking"""
         import math
         
-        adjusted_pad = current_pad.copy()
+        groups = []
+        processed = set()
         
-        # Find nearby pads that might require mask constraints
-        nearby_pads = self.find_close_pads(current_pad, all_pads, current_index, min_mask_width * 3)
-        
-        if not nearby_pads:
-            return adjusted_pad
-        
-        # For each nearby pad, check if we need to constrain the current pad
-        for nearby_pad in nearby_pads:
-            # Calculate distance between pad centers
-            dx = nearby_pad['x'] - current_pad['x']
-            dy = nearby_pad['y'] - current_pad['y']
-            distance = math.sqrt(dx*dx + dy*dy)
-            
-            if distance < 0.001:  # Skip if pads are at same position
+        for i, pad in enumerate(all_pads):
+            if i in processed:
                 continue
                 
-            # Calculate the minimum required distance between pad edges
-            # This is the sum of half-widths plus minimum mask width
-            current_bounds = self.get_pad_bounds(current_pad)
-            nearby_bounds = self.get_pad_bounds(nearby_pad)
+            # Start a new group with this pad
+            current_group = [i]
+            processed.add(i)
             
-            # Calculate required separation in the direction between centers
-            direction_x = dx / distance
-            direction_y = dy / distance
+            # Find all pads connected to this group
+            changed = True
+            while changed:
+                changed = False
+                for j, other_pad in enumerate(all_pads):
+                    if j in processed:
+                        continue
+                        
+                    # Check if this pad is close to any pad in the current group
+                    for group_idx in current_group:
+                        group_pad = all_pads[group_idx]
+                        dx = other_pad['x'] - group_pad['x']
+                        dy = other_pad['y'] - group_pad['y']
+                        distance = math.sqrt(dx*dx + dy*dy)
+                        
+                        # Consider pads close if they're within 2x the minimum mask width
+                        max_dimension = max(group_pad['width'], group_pad['height'], 
+                                          other_pad['width'], other_pad['height'])
+                        threshold = max_dimension + min_mask_width * 2
+                        
+                        if distance < threshold:
+                            current_group.append(j)
+                            processed.add(j)
+                            changed = True
+                            break
+                    
+                    if changed:
+                        break
             
-            # Project pad half-dimensions onto the line between centers
-            current_half_proj = self.project_pad_dimension(current_pad, direction_x, direction_y)
-            nearby_half_proj = self.project_pad_dimension(nearby_pad, -direction_x, -direction_y)
-            
-            required_distance = current_half_proj + nearby_half_proj + min_mask_width
-            
-            if distance < required_distance:
-                # Need to shrink current pad
-                shrink_amount = (required_distance - distance) / 2
-                
-                # Determine which dimension to shrink based on pad orientation and direction
-                angle_rad = math.radians(current_pad['angle'])
-                
-                # Transform direction to pad's local coordinate system
-                local_dir_x = direction_x * math.cos(-angle_rad) - direction_y * math.sin(-angle_rad)
-                local_dir_y = direction_x * math.sin(-angle_rad) + direction_y * math.cos(-angle_rad)
-                
-                # Shrink the dimension that's most aligned with the direction to nearby pad
-                if abs(local_dir_x) > abs(local_dir_y):
-                    # Shrink width
-                    new_width = max(0.1, adjusted_pad['width'] - shrink_amount * 2)
-                    adjusted_pad['width'] = new_width
-                else:
-                    # Shrink height
-                    new_height = max(0.1, adjusted_pad['height'] - shrink_amount * 2)
-                    adjusted_pad['height'] = new_height
+            groups.append(current_group)
         
-        return adjusted_pad
+        return groups
+
+    def calculate_group_shrink_factor(self, group_indices, all_pads):
+        """Calculate uniform shrink factor for a group of closely packed pads"""
+        import math
+        
+        if len(group_indices) <= 1:
+            return 1.0  # No shrinking needed for single pads
+        
+        group_pads = [all_pads[i] for i in group_indices]
+        
+        # Find the most constraining pad pair in the group
+        min_shrink_factor = 1.0
+        
+        for i, pad1 in enumerate(group_pads):
+            for j, pad2 in enumerate(group_pads):
+                if i >= j:
+                    continue
+                    
+                dx = pad2['x'] - pad1['x']
+                dy = pad2['y'] - pad1['y']
+                distance = math.sqrt(dx*dx + dy*dy)
+                
+                if distance < 0.001:
+                    continue
+                
+                # Calculate required shrink factor for this pair
+                # Current edge-to-edge distance = distance - (pad1_half + pad2_half)
+                # Required edge-to-edge distance = min_mask_width
+                # So we need: distance - (pad1_half + pad2_half) * shrink >= min_mask_width
+                # Therefore: shrink <= (distance - min_mask_width) / (pad1_half + pad2_half)
+                
+                if abs(dx) > abs(dy):  # Primarily X-direction constraint
+                    pad1_half = pad1['width'] / 2
+                    pad2_half = pad2['width'] / 2
+                    current_gap = abs(dx) - pad1_half - pad2_half
+                    
+                    if current_gap < min_mask_width:
+                        required_shrink = (abs(dx) - min_mask_width) / (pad1_half + pad2_half)
+                        min_shrink_factor = min(min_shrink_factor, required_shrink)
+                
+                if abs(dy) > abs(dx):  # Primarily Y-direction constraint
+                    pad1_half = pad1['height'] / 2
+                    pad2_half = pad2['height'] / 2
+                    current_gap = abs(dy) - pad1_half - pad2_half
+                    
+                    if current_gap < min_mask_width:
+                        required_shrink = (abs(dy) - min_mask_width) / (pad1_half + pad2_half)
+                        min_shrink_factor = min(min_shrink_factor, required_shrink)
+                
+                # For diagonal constraints
+                if abs(abs(dx) - abs(dy)) < min(abs(dx), abs(dy)) * 0.3:
+                    # Both X and Y constraints apply
+                    pad1_half_x = pad1['width'] / 2
+                    pad2_half_x = pad2['width'] / 2
+                    pad1_half_y = pad1['height'] / 2
+                    pad2_half_y = pad2['height'] / 2
+                    
+                    current_gap_x = abs(dx) - pad1_half_x - pad2_half_x
+                    current_gap_y = abs(dy) - pad1_half_y - pad2_half_y
+                    
+                    if current_gap_x < min_mask_width:
+                        required_shrink_x = (abs(dx) - min_mask_width) / (pad1_half_x + pad2_half_x)
+                        min_shrink_factor = min(min_shrink_factor, required_shrink_x)
+                    
+                    if current_gap_y < min_mask_width:
+                        required_shrink_y = (abs(dy) - min_mask_width) / (pad1_half_y + pad2_half_y)
+                        min_shrink_factor = min(min_shrink_factor, required_shrink_y)
+        
+        # Ensure minimum pad size (don't shrink below 0.1mm)
+        max_shrink_for_min_size = 1.0
+        for pad in group_pads:
+            if pad['width'] * min_shrink_factor < 0.1:
+                max_shrink_for_min_size = min(max_shrink_for_min_size, 0.1 / pad['width'])
+            if pad['height'] * min_shrink_factor < 0.1:
+                max_shrink_for_min_size = min(max_shrink_for_min_size, 0.1 / pad['height'])
+        
+        final_shrink_factor = max(0.1, min(min_shrink_factor, max_shrink_for_min_size))
+        
+        return final_shrink_factor
 
 
     def generate_pads(self, board):
@@ -515,16 +581,29 @@ class StencilGenerator(pcbnew.ActionPlugin):
                         'pad': pad
                     })
 
-        # Generate pad cutouts with mask constraints
-        for i, pad_info in enumerate(pads_info):
-            adjusted_pad = self.calculate_mask_constrained_pad(pad_info, pads_info, i)
-            
-            scad += f"    translate([{adjusted_pad['x']}, {adjusted_pad['y']}]) "
-            scad += f"rotate([0, 0, {adjusted_pad['angle']}]) "
-            scad += f"square([{adjusted_pad['width']}, {adjusted_pad['height']}], center=true);\n"
+        if not pads_info:
+            return "    // No SMD pads found\n"
+
+        # Group pads that are close to each other
+        pad_groups = self.find_pad_groups(pads_info)
         
-        if not scad:
-            scad = "    // No SMD pads found\n"
+        # Calculate shrink factor for each group
+        group_shrink_factors = {}
+        for group_indices in pad_groups:
+            shrink_factor = self.calculate_group_shrink_factor(group_indices, pads_info)
+            for idx in group_indices:
+                group_shrink_factors[idx] = shrink_factor
+
+        # Generate pad cutouts with uniform shrinking per group
+        for i, pad_info in enumerate(pads_info):
+            shrink_factor = group_shrink_factors.get(i, 1.0)
+            
+            adjusted_width = pad_info['width'] * shrink_factor
+            adjusted_height = pad_info['height'] * shrink_factor
+            
+            scad += f"    translate([{pad_info['x']}, {pad_info['y']}]) "
+            scad += f"rotate([0, 0, {pad_info['angle']}]) "
+            scad += f"square([{adjusted_width}, {adjusted_height}], center=true);\n"
         
         return scad
 
