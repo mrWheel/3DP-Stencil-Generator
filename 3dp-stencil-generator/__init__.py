@@ -5,9 +5,10 @@ import os
 
 
 # === Global configuration ===
-BUILD = "113"            # Build number
+BUILD = "115"            # Build number
 workDir = "stencil"      # Working folder name
-min_mask_width = 0.50    # Minimum mask width (mm) between pads
+min_mask_width = 0.20    # Minimum mask width (mm) between pads
+min_pad_size = 0.40      # Minimum pad size (mm) after shrinking
 pcbClearence = 0.15      # PCB clearance (mm) - moves outline outward from Edge.Cuts
 
 
@@ -120,14 +121,122 @@ class StencilGenerator(pcbnew.ActionPlugin):
 
         return scad
 
-    def generate_frame(self, board):
-        frame_rect = self.find_shape_on_layer(board, pcbnew.User_8)
-        if not frame_rect:
-            return "    // No frame found on User.8 layer\n"
+    def calculate_pcb_bounds(self, board):
+        """Calculate PCB bounds for frame generation"""
+        # Try User.9 first (preferred method)
+        pcb_rect = self.find_shape_on_layer(board, pcbnew.User_9)
+        if pcb_rect:
+            # User.9 rectangle found - use its bounds
+            center_x = pcb_rect[0] + pcb_rect[2]/2
+            center_y = pcb_rect[1] + pcb_rect[3]/2
+            width = self.mm(pcb_rect[2])
+            height = self.mm(pcb_rect[3])
+            return {
+                'center_x': center_x,
+                'center_y': center_y,
+                'width': width,
+                'height': height
+            }
+        
+        # Fallback: analyze Edge.Cuts to determine bounds
+        # Get all Edge.Cuts elements to calculate bounding box
+        min_x = float('inf')
+        max_x = float('-inf')
+        min_y = float('inf')
+        max_y = float('-inf')
+        
+        found_edge_cuts = False
+        
+        for drawing in board.GetDrawings():
+            if drawing.GetLayer() == pcbnew.Edge_Cuts and isinstance(drawing, pcbnew.PCB_SHAPE):
+                found_edge_cuts = True
+                shape_type = drawing.GetShape()
+                
+                if shape_type == pcbnew.SHAPE_T_SEGMENT:
+                    start = drawing.GetStart()
+                    end = drawing.GetEnd()
+                    min_x = min(min_x, start.x, end.x)
+                    max_x = max(max_x, start.x, end.x)
+                    min_y = min(min_y, start.y, end.y)
+                    max_y = max(max_y, start.y, end.y)
+                    
+                elif shape_type == pcbnew.SHAPE_T_CIRCLE:
+                    center = drawing.GetCenter()
+                    radius = drawing.GetRadius()
+                    min_x = min(min_x, center.x - radius)
+                    max_x = max(max_x, center.x + radius)
+                    min_y = min(min_y, center.y - radius)
+                    max_y = max(max_y, center.y + radius)
+                    
+                elif shape_type == pcbnew.SHAPE_T_RECT:
+                    start = drawing.GetStart()
+                    end = drawing.GetEnd()
+                    min_x = min(min_x, start.x, end.x)
+                    max_x = max(max_x, start.x, end.x)
+                    min_y = min(min_y, start.y, end.y)
+                    max_y = max(max_y, start.y, end.y)
+                    
+                elif shape_type == pcbnew.SHAPE_T_ARC:
+                    # For arcs, include start, end, and center points as approximation
+                    center = drawing.GetCenter()
+                    start = drawing.GetStart()
+                    end = drawing.GetEnd()
+                    min_x = min(min_x, center.x, start.x, end.x)
+                    max_x = max(max_x, center.x, start.x, end.x)
+                    min_y = min(min_y, center.y, start.y, end.y)
+                    max_y = max(max_y, center.y, start.y, end.y)
+        
+        if found_edge_cuts and min_x != float('inf'):
+            # Calculate bounds from Edge.Cuts
+            center_x = (min_x + max_x) / 2
+            center_y = (min_y + max_y) / 2
+            width = self.mm(max_x - min_x)
+            height = self.mm(max_y - min_y)
+            return {
+                'center_x': center_x,
+                'center_y': center_y,
+                'width': width,
+                'height': height
+            }
+        
+        # Ultimate fallback: use board bounding box
+        bbox = board.GetBoundingBox()
+        center_x = bbox.GetCenter().x
+        center_y = bbox.GetCenter().y
+        width = self.mm(bbox.GetWidth())
+        height = self.mm(bbox.GetHeight())
+        
+        return {
+            'center_x': center_x,
+            'center_y': center_y,
+            'width': width,
+            'height': height
+        }
 
-        scad = f"    linear_extrude(height=frame_height) {{\n"
-        scad += f"        square([{self.mm(frame_rect[2])}, {self.mm(frame_rect[3])}], center=true);\n"
+    def generate_frame(self, board):
+        # First, try to find existing rectangle on User.8 layer
+        frame_rect = self.find_shape_on_layer(board, pcbnew.User_8)
+        
+        if frame_rect:
+            # User.8 rectangle found - use existing logic
+            scad = f"    linear_extrude(height=frame_height) {{\n"
+            scad += f"        square([{self.mm(frame_rect[2])}, {self.mm(frame_rect[3])}], center=true);\n"
+            scad += "    }\n"
+            return scad
+    
+        # User.8 rectangle not found - auto-calculate frame
+        pcb_bounds = self.calculate_pcb_bounds(board)
+        
+        # Add 5mm margin on all sides (10mm total to width and height)
+        frame_margin = 5.0  # mm
+        frame_width = pcb_bounds['width'] + (2 * frame_margin)
+        frame_height = pcb_bounds['height'] + (2 * frame_margin)
+        
+        scad = f"    // Auto-calculated frame (PCB + {frame_margin}mm margin)\n"
+        scad += f"    linear_extrude(height=frame_height) {{\n"
+        scad += f"        square([{frame_width}, {frame_height}], center=true);\n"
         scad += "    }\n"
+        
         return scad
     
     def connect_line_segments(self, segments):
@@ -536,14 +645,14 @@ class StencilGenerator(pcbnew.ActionPlugin):
         
         # Ensure minimum pad size (don't shrink below 0.1mm)
         for pad in group_pads:
-            if pad['width'] * min_width_shrink < 0.1:
-                min_width_shrink = max(min_width_shrink, 0.1 / pad['width'])
-            if pad['height'] * min_height_shrink < 0.1:
-                min_height_shrink = max(min_height_shrink, 0.1 / pad['height'])
+            if pad['width'] * min_width_shrink < min_pad_size:
+                min_width_shrink = max(min_width_shrink, min_pad_size / pad['width'])
+            if pad['height'] * min_height_shrink < min_pad_size:
+                min_height_shrink = max(min_height_shrink, min_pad_size / pad['height'])
         
         return {
-            'width': max(0.1, min_width_shrink),
-            'height': max(0.1, min_height_shrink)
+            'width': max(min_pad_size, min_width_shrink),
+            'height': max(min_pad_size, min_height_shrink)
         }
 
 

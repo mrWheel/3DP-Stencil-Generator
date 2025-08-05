@@ -3,7 +3,7 @@ KiCad 3D Printable Stencil Generator Plugin
 
 ## Features
 
-- Generates a stencil frame based on User.8 layer
+- Generates a stencil frame based on the Edge.Cuts (PCB outline) or User.8 layer
 - Creates pad cutouts based on SMD pads
 - Adds alignment pin holes based on circles on User.7 layer
 - Outputs an OpenSCAD file for easy customization and 3D printing
@@ -24,17 +24,21 @@ In the `__init__.py` program you can tweak some settings to your needs.
 BUILD = "109"            # Build number
 workDir = "stencil"      # Working folder name
 min_mask_width = 0.40    # Minimum mask width (mm) between pads
+min_pad_size = 0.40      # Minimum pad size (mm) after shrinking
 pcbClearence = 0.15      # PCB clearance (mm) - moves outline outward from Edge.Cuts
 </pre>
 
 ## Usage
 
-1. In KiCad PCB Editor, draw a rectangle on User.8 layer to define the stencil frame.
+1. In KiCad PCB Editor:
+  - 1.1 Draw a rectangle on User.8 layer to define the stencil frame.
+  - 1.2. If no User.8 layer is present, or if it doesn’t contain a rectangle, the stencil frame is derived from the Edge.Cuts layer (+5mm in all directions).
+2. In KiCad PCB Editor:
   - 2.1. Draw a rectangle on User.9 layer to define the PCB outline.
   - 2.2. If no User.9 layer is present, or if it doesn’t contain a rectangle, the PCB outline is derived from the Edge.Cuts layer.
 3. (Optional) Draw circles on User.7 layer to define alignment pin positions.
 4. Click the ![icon](https://github.com/hugelton/3DP-Stencil-Generator/blob/99ac4820377e08e7fa33e80fa1f7343ff17766b6/3dp-stencil-generator/icon.png)"3D Printable Stencil Generator" button in the toolbar.
-5. The plugin will create a working ("stencil" defined in the __init__.py program) directory in the same directory as your PCB file and then generate an OpenSCAD file in that directory.
+5. The plugin will create a working directory ("/stencil" defined in the `__init__.py` program) in the same directory as your PCB file and then generate an OpenSCAD file in that directory.
 6. Open the generated OpenSCAD file to customize parameters if needed.
 7. Render and export the stencil as an STL file for 3D printing.
 
