@@ -16,13 +16,25 @@ KiCad 3D Printable Stencil Generator Plugin
    - Linux: `/usr/share/kicad/scripting/plugins`
    - macOS: `/Applications/KiCad/KiCad.app/Contents/SharedSupport/scripting/plugins`
 
+## Settings
+
+In the `__init__.py` program you can tweak some settings to your needs.
+<pre>
+# === Global configuration ===
+BUILD = "109"            # Build number
+workDir = "stencil"      # Working folder name
+min_mask_width = 0.40    # Minimum mask width (mm) between pads
+pcbClearence = 0.15      # PCB clearance (mm) - moves outline outward from Edge.Cuts
+</pre>
+
 ## Usage
 
 1. In KiCad PCB Editor, draw a rectangle on User.8 layer to define the stencil frame.
-2. Draw a rectangle on User.9 layer to define the PCB outline.
+  - 2.1. Draw a rectangle on User.9 layer to define the PCB outline.
+  - 2.2. If no User.9 layer is present, or if it doesn’t contain a rectangle, the PCB outline is derived from the Edge.Cuts layer.
 3. (Optional) Draw circles on User.7 layer to define alignment pin positions.
 4. Click the ![icon](https://github.com/hugelton/3DP-Stencil-Generator/blob/99ac4820377e08e7fa33e80fa1f7343ff17766b6/3dp-stencil-generator/icon.png)"3D Printable Stencil Generator" button in the toolbar.
-5. The plugin will generate an OpenSCAD file in the same directory as your PCB file.
+5. The plugin will create a working ("stencil" defined in the __init__.py program) directory in the same directory as your PCB file and then generate an OpenSCAD file in that directory.
 6. Open the generated OpenSCAD file to customize parameters if needed.
 7. Render and export the stencil as an STL file for 3D printing.
 

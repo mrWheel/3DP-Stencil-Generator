@@ -5,10 +5,10 @@ import os
 
 
 # === Global configuration ===
-BUILD = "105"            # Build number
+BUILD = "109"            # Build number
 workDir = "stencil"      # Working folder name
-min_mask_width = 0.22    # Minimum mask width (mm) between pads
-pcbClearence = 0.1       # PCB clearance (mm) - moves outline outward from Edge.Cuts
+min_mask_width = 0.40    # Minimum mask width (mm) between pads
+pcbClearence = 0.15      # PCB clearance (mm) - moves outline outward from Edge.Cuts
 
 
 class StencilGenerator(pcbnew.ActionPlugin):
@@ -224,24 +224,24 @@ class StencilGenerator(pcbnew.ActionPlugin):
                   log(f"Line segment: ({x1}, {y1}) to ({x2}, {y2})")
                   
               elif shape_type == pcbnew.SHAPE_T_CIRCLE:
-                  # Add circle as separate shape
+                  # Add circle as separate shape with clearance
                   center_circle = drawing.GetCenter()
                   radius = drawing.GetRadius()
                   cx, cy = self.mm(center_circle.x - center_x), self.mm(center_circle.y - center_y)
-                  r = self.mm(radius)
+                  r = self.mm(radius) + pcbClearence
                   shapes.append(f"translate([{cx}, {cy}]) circle(r={r})")
-                  log(f"Circle: center ({cx}, {cy}), radius {r}")
+                  log(f"Circle: center ({cx}, {cy}), radius {r} (with clearance)")
                   
               elif shape_type == pcbnew.SHAPE_T_RECT:
-                  # Add rectangle as separate shape
+                  # Add rectangle as separate shape with clearance
                   start = drawing.GetStart()
                   end = drawing.GetEnd()
                   x1, y1 = self.mm(start.x - center_x), self.mm(start.y - center_y)
                   x2, y2 = self.mm(end.x - center_x), self.mm(end.y - center_y)
-                  w, h = abs(x2 - x1), abs(y2 - y1)
+                  w, h = abs(x2 - x1) + 2 * pcbClearence, abs(y2 - y1) + 2 * pcbClearence
                   cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
                   shapes.append(f"translate([{cx}, {cy}]) square([{w}, {h}], center=true)")
-                  log(f"Rectangle: center ({cx}, {cy}), size {w}x{h}")
+                  log(f"Rectangle: center ({cx}, {cy}), size {w}x{h} (with clearance)")
                   
               elif shape_type == pcbnew.SHAPE_T_ARC:
                   # Convert arc to polygon approximation
@@ -287,24 +287,26 @@ class StencilGenerator(pcbnew.ActionPlugin):
           polygon_points = self.connect_line_segments(line_segments)
           if polygon_points:
               points_str = ",".join([f"[{x},{y}]" for x, y in polygon_points])
-              scad += f"    polygon(points=[{points_str}]);\n"
-              log(f"Created polygon with {len(polygon_points)} points")
+              # Apply clearance using offset() for closed polygons
+              scad += f"    offset(r={pcbClearence}) polygon(points=[{points_str}]);\n"
+              log(f"Created polygon with {len(polygon_points)} points and {pcbClearence}mm clearance")
           else:
-              # If we can't form a closed polygon, create individual line shapes
-              log("Could not form closed polygon, using individual line shapes")
+              # If we can't form a closed polygon, create individual line shapes with clearance
+              log("Could not form closed polygon, using individual line shapes with clearance")
               for segment in line_segments:
                   (x1, y1), (x2, y2) = segment
-                  # Create a thin rectangle for each line segment
+                  # Create a thin rectangle for each line segment with increased width for clearance
                   length = ((x2-x1)**2 + (y2-y1)**2)**0.5
                   if length > 0.001:  # Avoid zero-length segments
                       angle = math.atan2(y2-y1, x2-x1) * 180 / math.pi
                       cx, cy = (x1+x2)/2, (y1+y2)/2
-                      shapes.append(f"translate([{cx}, {cy}]) rotate([0, 0, {angle}]) square([{length}, 0.1], center=true)")
+                      line_width = 0.1 + 2 * pcbClearence
+                      shapes.append(f"translate([{cx}, {cy}]) rotate([0, 0, {angle}]) square([{length}, {line_width}], center=true)")
       
       # Add other shapes to union if we have any
       if shapes:
           if scad:  # We already have a polygon
-              scad = f"    union() {{\n        polygon(points=[{points_str}]);\n"
+              scad = f"    union() {{\n        offset(r={pcbClearence}) polygon(points=[{points_str}]);\n"
               for shape in shapes:
                   scad += f"        {shape};\n"
               scad += "    }\n"
@@ -319,15 +321,15 @@ class StencilGenerator(pcbnew.ActionPlugin):
       
       # Fallback if no Edge.Cuts found
       if not scad:
-          log("No Edge.Cuts shapes found, using board bounding box fallback")
+          log("No Edge.Cuts shapes found, using board bounding box fallback with clearance")
           bbox = board.GetBoundingBox()
-          w = self.mm(bbox.GetWidth())
-          h = self.mm(bbox.GetHeight())
+          w = self.mm(bbox.GetWidth()) + 2 * pcbClearence
+          h = self.mm(bbox.GetHeight()) + 2 * pcbClearence
           scad = f"    square([{w}, {h}], center=true);\n"
-          log(f"Fallback size: {w} x {h} mm")
+          log(f"Fallback size: {w} x {h} mm (with clearance)")
       
       log("=== Edge.Cuts analysis complete ===")
-   
+
       return scad
 
 
