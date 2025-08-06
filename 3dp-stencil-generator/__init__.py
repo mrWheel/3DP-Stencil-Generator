@@ -1,3 +1,8 @@
+# 3DP Stencil Generator for KiCad
+# Original Author: Leo Kuroshita (Hugelton Instruments)
+# License: MIT
+# Repository: https://github.com/hugelton/3DP-Stencil-Generator
+
 import pcbnew
 import re
 import datetime
@@ -114,7 +119,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
             project_file = board.GetFileName()
     
             if not project_file:
-                raise RuntimeError("Geen board-bestand geladen")
+                raise RuntimeError("No board file loaded")
     
             project_dir = os.path.dirname(project_file)
             output_dir = os.path.join(project_dir, workDir)
@@ -126,7 +131,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
                 with open(log_file, "a", encoding="utf-8") as f:
                     f.write(f"{datetime.datetime.now()} - {msg}\n")
     
-            log(f"===== Plugin gestart - BUILD {BUILD} =====")
+            log(f"===== Plugin started - BUILD {BUILD} =====")
             log(f"Project directory: {project_dir}")
 
             # Show parameter dialog first
@@ -141,19 +146,19 @@ class StencilGenerator(pcbnew.ActionPlugin):
     
             with open(output_filename, 'w', encoding='utf-8') as f:
                 f.write(self.generate_openscad(board))
-                log(f"SCAD-bestand geschreven: {output_filename}")
+                log(f"SCAD file written: {output_filename}")
     
             pcbnew.Refresh()
             print(f"OpenSCAD file generated: {output_filename}")
-            log("Script succesvol afgerond")
+            log("Script completed successfully")
     
         except Exception as e:
-            msg = f"FOUT in Run(): {repr(e)}"
+            msg = f"ERROR in Run(): {repr(e)}"
             try:
                 with open(log_file, "a", encoding="utf-8") as f:
                     f.write(f"{datetime.datetime.now()} - {msg}\n")
             except:
-                print("Fout bij schrijven van logbestand.")
+                print("Error writing to log file.")
             print(msg)
 
     def generate_openscad(self, board):

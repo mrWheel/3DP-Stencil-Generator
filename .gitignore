@@ -1,0 +1,28 @@
+# Claude Code guidance file
+CLAUDE.md
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# KiCad backup files
+*.kicad_pcb-bak
+*-backups/
+*.bak
+
+# Generated stencil files (keep for tracking)
+# stencil/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

@@ -1,6 +1,8 @@
 # 3DP-Stencil-Generator
 KiCad 3D Printable Stencil Generator Plugin
 
+Developed by Leo Kuroshita for Hugelton Instruments
+
 ## Features
 
 - Generates a stencil frame based on the Edge.Cuts (PCB outline) or User.8 layer
@@ -40,9 +42,19 @@ pcbClearence = 0.15      # PCB clearance (mm) - moves outline outward from Edge.
   - 2.2. If no User.9 layer is present, or if it doesn’t contain a rectangle, the PCB outline is derived from the Edge.Cuts layer.
 3. (Optional) Draw circles on User.7 layer to define alignment pin positions.
 4. Click the ![icon](https://github.com/hugelton/3DP-Stencil-Generator/blob/99ac4820377e08e7fa33e80fa1f7343ff17766b6/3dp-stencil-generator/icon.png)"3D Printable Stencil Generator" button in the toolbar.
+   - A parameter dialog will appear where you can configure settings interactively
+   - Alternatively, you can modify the default values in the `__init__.py` file
 5. The plugin will create a working directory ("/stencil" defined in the `__init__.py` program) in the same directory as your PCB file and then generate an OpenSCAD file in that directory.
 6. Open the generated OpenSCAD file to customize parameters if needed.
 7. Render and export the stencil as an STL file for 3D printing.
+
+## Author
+
+- **Leo Kuroshita** ([Hugelton Instruments](https://github.com/hugelton)) - Original author and maintainer
+
+## Contributors
+
+- [mrWheel](https://github.com/mrWheel) - Added Edge.Cuts support, GUI dialog, and advanced pad spacing algorithms
 
 ## License
 
