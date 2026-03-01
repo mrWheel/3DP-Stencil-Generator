@@ -1,7 +1,7 @@
 # 3DP Stencil Generator for KiCad
 # Original Author: Leo Kuroshita (Hugelton Instruments)
 # License: MIT
-# Repository: https://github.com/hugelton/3DP-Stencil-Generator
+# Original Repository: https://github.com/hugelton/3DP-Stencil-Generator
 
 import pcbnew
 import re
@@ -11,16 +11,16 @@ import configparser
 
 
 # === Global configuration ===
-BUILD = "129"            # Build number
-workDir = "stencil"      # Working folder name
-frontCopperPads = True # Generate front copper pads
-backCopperPads = False # Generate back copper pads
-copperSelection = 0     # 0 = front, 1 = back
-minGabBetweenPads = 0.20    # Minimum mask width (mm) between pads
-minPadSize = 0.40      # Minimum pad size (mm) after shrinking
+BUILD = "138"             # Build number
+workDir = "stencil"       # Working folder name
+frontCopperPads = True    # Generate front copper pads
+backCopperPads = False    # Generate back copper pads
+copperSelection = 0       # 0 = front, 1 = back
+minGabBetweenPads = 0.30  # Minimum mask width (mm) between pads
+minPadSize = 0.50         # Minimum pad size (mm) after shrinking
 narrowPadThreshold = 1.0  # Threshold for narrow pad optimization (mm)
-pcbClearence = 0.15      # PCB clearance (mm) - moves outline outward from Edge.Cuts
-prySlotPosition = 4      # Pry slot position: 0=Top, 1=Right, 2=Bottom, 3=Left, 4=None
+pcbClearence = 0.15       # PCB clearance (mm) - moves outline outward from Edge.Cuts
+prySlotPosition = 4       # Pry slot position: 0=Top, 1=Right, 2=Bottom, 3=Left, 4=None
 
 import wx
 
@@ -107,6 +107,13 @@ class StencilParametersDialog(wx.Dialog):
     def __init__(self, parent):
         super().__init__(parent, title="Stencil Generator Parameters")
         sizer = wx.BoxSizer(wx.VERTICAL)
+
+        build_label = wx.StaticText(self, label=f"BUILD {BUILD}")
+        build_font = build_label.GetFont()
+        build_font.MakeBold()
+        build_label.SetFont(build_font)
+        sizer.Add(build_label, 0, wx.ALL, 5)
+
         self.copper_side_rb = wx.RadioBox(
             self, label="Copper side", choices=["Front", "Back"], majorDimension=1, style=wx.RA_SPECIFY_ROWS)
         self.copper_side_rb.SetSelection(0 if frontCopperPads else 1)
@@ -240,6 +247,10 @@ class StencilGenerator(pcbnew.ActionPlugin):
             os.makedirs(output_dir, exist_ok=True)
 
             log_file = os.path.join(output_dir, "kicad_stencilgen_debug.log")
+
+            # Start each run with a clean debug log file
+            with open(log_file, "w", encoding="utf-8") as f:
+                f.write("")
 
             def log(msg):
                 with open(log_file, "a", encoding="utf-8") as f:
@@ -1066,8 +1077,6 @@ class StencilGenerator(pcbnew.ActionPlugin):
         
     def optimizeNarrowPads(self, padsInfo, groupShrinkFactors):
         """Optimize narrow pads to maximize their dimensions while respecting constraints"""
-        import math
-        
         debug_log = self.get_debug_log_function()
         
         optimizedFactors = groupShrinkFactors.copy()
@@ -1088,32 +1097,72 @@ class StencilGenerator(pcbnew.ActionPlugin):
                 
                 # Start with no shrinking (factor 1.0)
                 currentFactors = optimizedFactors.get(i, {'width': 1.0, 'height': 1.0})
-                originalFactors = currentFactors.copy()
+                currentFactors = currentFactors.copy()
                 wasOptimized = False
                 wasCapped = False
                 
-                # Try to optimize width if it's narrow
+                # Try to optimize width if it's narrow (rotation-aware, gap-safe binary search)
                 if pad_info['width'] < narrowPadThreshold:
-                    maxPossibleWidth = self.calculateMaxPadDimension(pad_info, padsInfo, i, 'width')
-                    if maxPossibleWidth > pad_info['width']:
-                        newWidthFactor = maxPossibleWidth / pad_info['width']
-                        currentFactors['width'] = newWidthFactor
+                    if pad_info['width'] > 0:
+                        targetWidthFactor = minPadSize / pad_info['width']
+                    else:
+                        targetWidthFactor = currentFactors['width']
+
+                    low = currentFactors['width']
+                    high = max(low, targetWidthFactor)
+                    best = low
+
+                    for _ in range(20):
+                        mid = (low + high) / 2
+                        candidate = {
+                            'width': mid,
+                            'height': currentFactors['height']
+                        }
+                        if self.isPadFactorGapSafe(i, candidate, padsInfo, optimizedFactors):
+                            best = mid
+                            low = mid
+                        else:
+                            high = mid
+
+                    if best > currentFactors['width'] + 1e-6:
+                        currentFactors['width'] = best
                         wasOptimized = True
                         
                         # Check if we were capped at minPadSize
-                        if maxPossibleWidth >= minPadSize:
+                        finalWidth = pad_info['width'] * currentFactors['width']
+                        if finalWidth >= minPadSize - 1e-6:
                             wasCapped = True
                 
-                # Try to optimize height if it's narrow
+                # Try to optimize height if it's narrow (rotation-aware, gap-safe binary search)
                 if pad_info['height'] < narrowPadThreshold:
-                    maxPossibleHeight = self.calculateMaxPadDimension(pad_info, padsInfo, i, 'height')
-                    if maxPossibleHeight > pad_info['height']:
-                        newHeightFactor = maxPossibleHeight / pad_info['height']
-                        currentFactors['height'] = newHeightFactor
+                    if pad_info['height'] > 0:
+                        targetHeightFactor = minPadSize / pad_info['height']
+                    else:
+                        targetHeightFactor = currentFactors['height']
+
+                    low = currentFactors['height']
+                    high = max(low, targetHeightFactor)
+                    best = low
+
+                    for _ in range(20):
+                        mid = (low + high) / 2
+                        candidate = {
+                            'width': currentFactors['width'],
+                            'height': mid
+                        }
+                        if self.isPadFactorGapSafe(i, candidate, padsInfo, optimizedFactors):
+                            best = mid
+                            low = mid
+                        else:
+                            high = mid
+
+                    if best > currentFactors['height'] + 1e-6:
+                        currentFactors['height'] = best
                         wasOptimized = True
                         
                         # Check if we were capped at minPadSize
-                        if maxPossibleHeight >= minPadSize:
+                        finalHeight = pad_info['height'] * currentFactors['height']
+                        if finalHeight >= minPadSize - 1e-6:
                             wasCapped = True
                 
                 # Only log if pad was actually optimized
@@ -1389,7 +1438,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
         return groups
 
     def calculateGroupShrinkFactor(self, groupIndices, allPads):
-        """Calculate separate shrink factors for width and height for a group of closely packed pads"""
+        """Calculate isotropic shrink factor for a group of closely packed pads (rotation-aware)."""
         import math
         
         if len(groupIndices) <= 1:
@@ -1397,9 +1446,8 @@ class StencilGenerator(pcbnew.ActionPlugin):
         
         groupPads = [allPads[i] for i in groupIndices]
         
-        # Find the most constraining pad pairs for each direction
-        minWidthShrink = 1.0
-        minHeightShrink = 1.0
+        # Use a single isotropic factor for robust behavior with rotated pads.
+        minScale = 1.0
         
         for i, pad1 in enumerate(groupPads):
             for j, pad2 in enumerate(groupPads):
@@ -1413,56 +1461,482 @@ class StencilGenerator(pcbnew.ActionPlugin):
                 if distance < 0.001:
                     continue
                 
-                # Check X-direction constraint (pads side-by-side)
-                if abs(dx) > abs(dy) * 1.5:  # Primarily X-direction separation
-                    pad1HalfWidth = pad1['width'] / 2
-                    pad2HalfWidth = pad2['width'] / 2
-                    currentGap = abs(dx) - pad1HalfWidth - pad2HalfWidth
-                    
-                    if currentGap < minGabBetweenPads:
-                        requiredShrink = (abs(dx) - minGabBetweenPads) / (pad1HalfWidth + pad2HalfWidth)
-                        minWidthShrink = min(minWidthShrink, requiredShrink)
-                
-                # Check Y-direction constraint (pads above/below each other)
-                elif abs(dy) > abs(dx) * 1.5:  # Primarily Y-direction separation
-                    pad1HalfHeight = pad1['height'] / 2
-                    pad2HalfHeight = pad2['height'] / 2
-                    currentGap = abs(dy) - pad1HalfHeight - pad2HalfHeight
-                    
-                    if currentGap < minGabBetweenPads:
-                        requiredShrink = (abs(dy) - minGabBetweenPads) / (pad1HalfHeight + pad2HalfHeight)
-                        minHeightShrink = min(minHeightShrink, requiredShrink)
-                
-                # Check diagonal constraints (pads close in both directions)
-                else:
-                    # Both X and Y constraints may apply
-                    pad1HalfWidth = pad1['width'] / 2
-                    pad2HalfWidth = pad2['width'] / 2
-                    pad1HalfHeight = pad1['height'] / 2
-                    pad2HalfHeight = pad2['height'] / 2
-                    
-                    currentGapX = abs(dx) - pad1HalfWidth - pad2HalfWidth
-                    currentGapY = abs(dy) - pad1HalfHeight - pad2HalfHeight
-                    
-                    if currentGapX < minGabBetweenPads:
-                        requiredShrinkX = (abs(dx) - minGabBetweenPads) / (pad1HalfWidth + pad2HalfWidth)
-                        minWidthShrink = min(minWidthShrink, requiredShrinkX)
-                    
-                    if currentGapY < minGabBetweenPads:
-                        requiredShrinkY = (abs(dy) - minGabBetweenPads) / (pad1HalfHeight + pad2HalfHeight)
-                        minHeightShrink = min(minHeightShrink, requiredShrinkY)
+                projX1 = self.getScaledPadProjection(pad1, {'width': 1.0, 'height': 1.0}, 1.0, 0.0)
+                projY1 = self.getScaledPadProjection(pad1, {'width': 1.0, 'height': 1.0}, 0.0, 1.0)
+                projX2 = self.getScaledPadProjection(pad2, {'width': 1.0, 'height': 1.0}, 1.0, 0.0)
+                projY2 = self.getScaledPadProjection(pad2, {'width': 1.0, 'height': 1.0}, 0.0, 1.0)
+
+                dxAbs = abs(dx)
+                dyAbs = abs(dy)
+
+                gapX = dxAbs - (projX1 + projX2)
+                gapY = dyAbs - (projY1 + projY2)
+
+                # Violation only when BOTH axes are below required minimum.
+                if gapX < minGabBetweenPads and gapY < minGabBetweenPads:
+                    denomX = projX1 + projX2
+                    denomY = projY1 + projY2
+                    sx = -1e9
+                    sy = -1e9
+
+                    if denomX > 1e-9:
+                        sx = (dxAbs - minGabBetweenPads) / denomX
+                    if denomY > 1e-9:
+                        sy = (dyAbs - minGabBetweenPads) / denomY
+
+                    # Need to satisfy at least one axis -> use the less restrictive bound.
+                    requiredScale = max(sx, sy)
+                    requiredScale = max(0.01, min(1.0, requiredScale))
+                    minScale = min(minScale, requiredScale)
         
-        # Ensure minimum pad size (don't shrink below 0.1mm)
-        for pad in groupPads:
-            if pad['width'] * minWidthShrink < minPadSize:
-                minWidthShrink = max(minWidthShrink, minPadSize / pad['width'])
-            if pad['height'] * minHeightShrink < minPadSize:
-                minHeightShrink = max(minHeightShrink, minPadSize / pad['height'])
+        # Gap has priority over minPadSize for group shrinking.
+        minScale = max(0.01, min(1.0, minScale))
         
         return {
-            'width': max(minPadSize, minWidthShrink),
-            'height': max(minPadSize, minHeightShrink)
+            'width': minScale,
+            'height': minScale
         }
+
+    def getScaledPadProjection(self, pad_info, factors, direction_x, direction_y):
+        """Project scaled pad half-dimension onto a given global direction."""
+        scaled_pad = {
+            'angle': pad_info['angle'],
+            'width': pad_info['width'] * factors['width'],
+            'height': pad_info['height'] * factors['height']
+        }
+        return self.projectPadDimension(scaled_pad, direction_x, direction_y)
+
+    def isPadFactorGapSafe(self, padIndex, candidateFactors, padsInfo, allFactors):
+        """Check whether candidate factors for one pad preserve minGabBetweenPads to all other pads."""
+        targetPad = padsInfo[padIndex]
+
+        targetProjX = self.getScaledPadProjection(targetPad, candidateFactors, 1.0, 0.0)
+        targetProjY = self.getScaledPadProjection(targetPad, candidateFactors, 0.0, 1.0)
+
+        for j, otherPad in enumerate(padsInfo):
+            if j == padIndex:
+                continue
+
+            otherFactors = allFactors.get(j, {'width': 1.0, 'height': 1.0})
+            otherProjX = self.getScaledPadProjection(otherPad, otherFactors, 1.0, 0.0)
+            otherProjY = self.getScaledPadProjection(otherPad, otherFactors, 0.0, 1.0)
+
+            dx = abs(otherPad['x'] - targetPad['x'])
+            dy = abs(otherPad['y'] - targetPad['y'])
+
+            gapX = dx - (targetProjX + otherProjX)
+            gapY = dy - (targetProjY + otherProjY)
+
+            # Pair is unsafe only if both axes are below minimum web.
+            if gapX < minGabBetweenPads and gapY < minGabBetweenPads:
+                return False
+
+        return True
+
+    def applySoftMinPadSize(self, padsInfo, allFactors):
+        """
+        Try to increase very small pads toward minPadSize without ever violating minGabBetweenPads.
+        minGabBetweenPads always has priority; minPadSize is a best-effort target.
+        """
+        debug_log = self.get_debug_log_function()
+
+        adjustedFactors = allFactors.copy()
+        padsRaised = 0
+
+        # Handle smallest pads first
+        orderedIndices = sorted(
+            range(len(padsInfo)),
+            key=lambda i: min(
+                padsInfo[i]['width'] * adjustedFactors.get(i, {'width': 1.0, 'height': 1.0})['width'],
+                padsInfo[i]['height'] * adjustedFactors.get(i, {'width': 1.0, 'height': 1.0})['height']
+            )
+        )
+
+        for i in orderedIndices:
+            padInfo = padsInfo[i]
+            currentFactors = adjustedFactors.get(i, {'width': 1.0, 'height': 1.0}).copy()
+            changed = False
+
+            # WIDTH: try to raise to minPadSize, but only if gap-safe
+            currentWidth = padInfo['width'] * currentFactors['width']
+            if currentWidth < minPadSize and padInfo['width'] > 0:
+                targetWidthFactor = minPadSize / padInfo['width']
+                low = currentFactors['width']
+                high = targetWidthFactor
+                best = low
+
+                for _ in range(20):
+                    mid = (low + high) / 2
+                    candidate = {'width': mid, 'height': currentFactors['height']}
+                    if self.isPadFactorGapSafe(i, candidate, padsInfo, adjustedFactors):
+                        best = mid
+                        low = mid
+                    else:
+                        high = mid
+
+                if best > currentFactors['width'] + 1e-6:
+                    currentFactors['width'] = best
+                    changed = True
+
+            # HEIGHT: try to raise to minPadSize, but only if gap-safe
+            currentHeight = padInfo['height'] * currentFactors['height']
+            if currentHeight < minPadSize and padInfo['height'] > 0:
+                targetHeightFactor = minPadSize / padInfo['height']
+                low = currentFactors['height']
+                high = targetHeightFactor
+                best = low
+
+                for _ in range(20):
+                    mid = (low + high) / 2
+                    candidate = {'width': currentFactors['width'], 'height': mid}
+                    if self.isPadFactorGapSafe(i, candidate, padsInfo, adjustedFactors):
+                        best = mid
+                        low = mid
+                    else:
+                        high = mid
+
+                if best > currentFactors['height'] + 1e-6:
+                    currentFactors['height'] = best
+                    changed = True
+
+            if changed:
+                adjustedFactors[i] = currentFactors
+                padsRaised += 1
+
+        if padsRaised > 0:
+            debug_log("=== SOFT minPadSize PASS ===")
+            debug_log(f"Pads raised toward minPadSize without violating minGabBetweenPads: {padsRaised}")
+            debug_log("")
+
+        return adjustedFactors
+
+    def isUniformClusterAxisGapSafe(self, clusterIndices, axis, candidateFactor, padsInfo, allFactors):
+        """Check if setting one axis factor uniformly for a cluster keeps all gaps safe."""
+        mergedFactors = allFactors.copy()
+
+        for idx in clusterIndices:
+            current = mergedFactors.get(idx, {'width': 1.0, 'height': 1.0}).copy()
+            current[axis] = candidateFactor
+            mergedFactors[idx] = current
+
+        for idx in clusterIndices:
+            if not self.isPadFactorGapSafe(idx, mergedFactors[idx], padsInfo, mergedFactors):
+                return False
+
+        return True
+
+    def getFootprintPinLikeClusters(self, padsInfo):
+        """
+        Build per-footprint clusters of similarly sized pin-like pads.
+        This avoids forcing exposed/thermal pads into the same uniform-scaling set as small IC leads.
+        """
+        footprintGroups = {}
+        for idx, padInfo in enumerate(padsInfo):
+            key = padInfo.get('footprint', '')
+            if key not in footprintGroups:
+                footprintGroups[key] = []
+            footprintGroups[key].append(idx)
+
+        clusters = []
+
+        for _, indices in footprintGroups.items():
+            if len(indices) < 3:
+                continue
+
+            areas = [padsInfo[i]['width'] * padsInfo[i]['height'] for i in indices]
+            minArea = min(areas)
+            if minArea <= 0:
+                continue
+
+            # Keep pads in a reasonable range around the smallest pad area.
+            # This isolates IC pins from large thermal/exposed pads.
+            pinLike = [
+                i for i in indices
+                if (padsInfo[i]['width'] * padsInfo[i]['height']) <= (minArea * 3.0)
+            ]
+
+            if 3 <= len(pinLike) <= 30:
+                clusters.append(pinLike)
+
+        return clusters
+
+    def enforceGlobalMinGap(self, padsInfo, allFactors, maxIterations=20):
+        """
+        Hard safety pass: enforce minGabBetweenPads globally for all pad pairs.
+        If needed, shrink violating pads until all pairwise constraints are satisfied.
+        """
+        adjustedFactors = allFactors.copy()
+
+        for _ in range(maxIterations):
+            hadViolation = False
+
+            for i in range(len(padsInfo)):
+                for j in range(i + 1, len(padsInfo)):
+                    padA = padsInfo[i]
+                    padB = padsInfo[j]
+
+                    factorsA = adjustedFactors.get(i, {'width': 1.0, 'height': 1.0})
+                    factorsB = adjustedFactors.get(j, {'width': 1.0, 'height': 1.0})
+
+                    projAX = self.getScaledPadProjection(padA, factorsA, 1.0, 0.0)
+                    projAY = self.getScaledPadProjection(padA, factorsA, 0.0, 1.0)
+                    projBX = self.getScaledPadProjection(padB, factorsB, 1.0, 0.0)
+                    projBY = self.getScaledPadProjection(padB, factorsB, 0.0, 1.0)
+
+                    dx = abs(padB['x'] - padA['x'])
+                    dy = abs(padB['y'] - padA['y'])
+
+                    currentX = projAX + projBX
+                    currentY = projAY + projBY
+                    gapX = dx - currentX
+                    gapY = dy - currentY
+
+                    if gapX < minGabBetweenPads and gapY < minGabBetweenPads:
+                        hadViolation = True
+
+                        sx = -1e9
+                        sy = -1e9
+                        if currentX > 1e-9:
+                            sx = (dx - minGabBetweenPads) / currentX
+                        if currentY > 1e-9:
+                            sy = (dy - minGabBetweenPads) / currentY
+
+                        # At least one axis must satisfy min gap.
+                        pairScale = max(sx, sy)
+                        pairScale = max(0.01, min(1.0, pairScale))
+
+                        newA = {
+                            'width': max(0.01, factorsA['width'] * pairScale),
+                            'height': max(0.01, factorsA['height'] * pairScale)
+                        }
+                        newB = {
+                            'width': max(0.01, factorsB['width'] * pairScale),
+                            'height': max(0.01, factorsB['height'] * pairScale)
+                        }
+
+                        adjustedFactors[i] = newA
+                        adjustedFactors[j] = newB
+
+            if not hadViolation:
+                break
+
+        return adjustedFactors
+
+    def applyUniformSmallFootprintScaling(self, padsInfo, allFactors):
+        """
+        Make small SMD footprints scale uniformly per axis.
+        This prevents one pin pad from growing while neighbors in the same package do not.
+        minGabBetweenPads remains the hard constraint.
+        """
+        debug_log = self.get_debug_log_function()
+
+        adjustedFactors = allFactors.copy()
+        pinLikeClusters = self.getFootprintPinLikeClusters(padsInfo)
+
+        syncedGroups = 0
+
+        for indices in pinLikeClusters:
+            groupSize = len(indices)
+
+            widthFactors = [adjustedFactors.get(i, {'width': 1.0, 'height': 1.0})['width'] for i in indices]
+            heightFactors = [adjustedFactors.get(i, {'width': 1.0, 'height': 1.0})['height'] for i in indices]
+
+            minWidthFactor = min(widthFactors)
+            minHeightFactor = min(heightFactors)
+            currentCommonW = minWidthFactor
+            currentCommonH = minHeightFactor
+
+            # First align down to the common baseline for true uniformity.
+            for i in indices:
+                factors = adjustedFactors.get(i, {'width': 1.0, 'height': 1.0}).copy()
+                factors['width'] = currentCommonW
+                factors['height'] = currentCommonH
+                adjustedFactors[i] = factors
+
+            # Then grow uniformly as far as safely possible.
+            # Target is to bring the smallest pad in the group toward minPadSize.
+            minOriginalW = min([padsInfo[i]['width'] for i in indices if padsInfo[i]['width'] > 0])
+            minOriginalH = min([padsInfo[i]['height'] for i in indices if padsInfo[i]['height'] > 0])
+            targetCommonW = max(currentCommonW, minPadSize / minOriginalW)
+            targetCommonH = max(currentCommonH, minPadSize / minOriginalH)
+
+            lowW = currentCommonW
+            highW = targetCommonW
+            bestW = currentCommonW
+            for _ in range(20):
+                mid = (lowW + highW) / 2
+                if self.isUniformClusterAxisGapSafe(indices, 'width', mid, padsInfo, adjustedFactors):
+                    bestW = mid
+                    lowW = mid
+                else:
+                    highW = mid
+
+            # Apply width uniformly before height solving, so height checks use the latest width state
+            for i in indices:
+                factors = adjustedFactors.get(i, {'width': 1.0, 'height': 1.0}).copy()
+                factors['width'] = bestW
+                adjustedFactors[i] = factors
+
+            lowH = currentCommonH
+            highH = targetCommonH
+            bestH = currentCommonH
+            for _ in range(20):
+                mid = (lowH + highH) / 2
+                if self.isUniformClusterAxisGapSafe(indices, 'height', mid, padsInfo, adjustedFactors):
+                    bestH = mid
+                    lowH = mid
+                else:
+                    highH = mid
+
+            for i in indices:
+                factors = adjustedFactors.get(i, {'width': 1.0, 'height': 1.0}).copy()
+                factors['height'] = bestH
+                adjustedFactors[i] = factors
+
+            syncedGroups += 1
+
+        if syncedGroups > 0:
+            debug_log("=== UNIFORM SMALL FOOTPRINT SCALING ===")
+            debug_log(f"Synchronized pin-like 3..30-pad clusters: {syncedGroups}")
+            debug_log("")
+
+        return adjustedFactors
+
+    def cloneFactorMap(self, factorMap):
+        """Create a normalized copy of factor map with explicit width/height entries."""
+        cloned = {}
+        for idx, factors in factorMap.items():
+            cloned[idx] = {
+                'width': factors.get('width', 1.0),
+                'height': factors.get('height', 1.0)
+            }
+        return cloned
+
+    def getFactorsForPad(self, factorMap, idx):
+        """Get normalized factors for a pad index."""
+        return factorMap.get(idx, {'width': 1.0, 'height': 1.0})
+
+    def calculateFinalGapSummary(self, padsInfo, factorMap):
+        """Return violation count and tightest achieved X/Y gaps for diagnostics."""
+        minGapX = float('inf')
+        minGapY = float('inf')
+        violations = 0
+
+        for i in range(len(padsInfo)):
+            for j in range(i + 1, len(padsInfo)):
+                padA = padsInfo[i]
+                padB = padsInfo[j]
+                factorsA = self.getFactorsForPad(factorMap, i)
+                factorsB = self.getFactorsForPad(factorMap, j)
+
+                projAX = self.getScaledPadProjection(padA, factorsA, 1.0, 0.0)
+                projAY = self.getScaledPadProjection(padA, factorsA, 0.0, 1.0)
+                projBX = self.getScaledPadProjection(padB, factorsB, 1.0, 0.0)
+                projBY = self.getScaledPadProjection(padB, factorsB, 0.0, 1.0)
+
+                dx = abs(padB['x'] - padA['x'])
+                dy = abs(padB['y'] - padA['y'])
+
+                gapX = dx - (projAX + projBX)
+                gapY = dy - (projAY + projBY)
+
+                # Only track directional gaps that are geometrically relevant.
+                if dy < (projAY + projBY + minGabBetweenPads):
+                    minGapX = min(minGapX, gapX)
+                if dx < (projAX + projBX + minGabBetweenPads):
+                    minGapY = min(minGapY, gapY)
+
+                if gapX < minGabBetweenPads - 1e-6 and gapY < minGabBetweenPads - 1e-6:
+                    violations += 1
+
+        if minGapX == float('inf'):
+            minGapX = 0.0
+        if minGapY == float('inf'):
+            minGapY = 0.0
+
+        return {
+            'violations': violations,
+            'minGapX': minGapX,
+            'minGapY': minGapY
+        }
+
+    def logPadScalingDiagnostics(self, padsInfo, step1, step2, step2b, step2c, finalFactors):
+        """Detailed diagnostics per footprint/pad for scaling decisions."""
+        debug_log = self.get_debug_log_function()
+        eps = 1e-6
+
+        footprintGroups = {}
+        for idx, padInfo in enumerate(padsInfo):
+            key = padInfo.get('footprint', '')
+            if key not in footprintGroups:
+                footprintGroups[key] = []
+            footprintGroups[key].append(idx)
+
+        debug_log("=== PAD SCALING DIAGNOSTICS ===")
+
+        for footprint in sorted(footprintGroups.keys()):
+            indices = footprintGroups[footprint]
+            changedIndices = []
+            for i in indices:
+                finalF = self.getFactorsForPad(finalFactors, i)
+                if abs(finalF['width'] - 1.0) > eps or abs(finalF['height'] - 1.0) > eps:
+                    changedIndices.append(i)
+
+            if not changedIndices:
+                continue
+
+            debug_log(f"Footprint {footprint}: pads={len(indices)}, changed={len(changedIndices)}")
+
+            for i in changedIndices:
+                padInfo = padsInfo[i]
+
+                f1 = self.getFactorsForPad(step1, i)
+                f2 = self.getFactorsForPad(step2, i)
+                f2b = self.getFactorsForPad(step2b, i)
+                f2c = self.getFactorsForPad(step2c, i)
+                ff = self.getFactorsForPad(finalFactors, i)
+
+                reasons = []
+                if abs(f1['width'] - 1.0) > eps or abs(f1['height'] - 1.0) > eps:
+                    reasons.append("narrow-opt")
+                if abs(f2['width'] - f1['width']) > eps or abs(f2['height'] - f1['height']) > eps:
+                    reasons.append("group-shrink")
+                if abs(f2b['width'] - f2['width']) > eps or abs(f2b['height'] - f2['height']) > eps:
+                    reasons.append("soft-minPad")
+                if abs(f2c['width'] - f2b['width']) > eps or abs(f2c['height'] - f2b['height']) > eps:
+                    reasons.append("uniform-footprint")
+                if (ff['width'] + eps) < f2c['width'] or (ff['height'] + eps) < f2c['height']:
+                    reasons.append("global-gap-safety")
+
+                if padInfo['width'] < minPadSize:
+                    targetW = minPadSize / padInfo['width'] if padInfo['width'] > 0 else 1.0
+                    if ff['width'] + 1e-4 < targetW:
+                        reasons.append("width-gap-limited")
+                if padInfo['height'] < minPadSize:
+                    targetH = minPadSize / padInfo['height'] if padInfo['height'] > 0 else 1.0
+                    if ff['height'] + 1e-4 < targetH:
+                        reasons.append("height-gap-limited")
+
+                try:
+                    padNr = str(padInfo['pad'].GetNumber())
+                except Exception:
+                    padNr = str(i)
+
+                finalW = padInfo['width'] * ff['width']
+                finalH = padInfo['height'] * ff['height']
+
+                debug_log(
+                    f"  Pad {padNr}: factor W/H {ff['width']:.3f}/{ff['height']:.3f}, "
+                    f"size {finalW:.3f}x{finalH:.3f} mm, reason={','.join(reasons) if reasons else 'none'}"
+                )
+
+        gapSummary = self.calculateFinalGapSummary(padsInfo, finalFactors)
+        debug_log(
+            f"Final gap summary: violations={gapSummary['violations']}, "
+            f"minGapX={gapSummary['minGapX']:.4f} mm, minGapY={gapSummary['minGapY']:.4f} mm, "
+            f"required={minGabBetweenPads:.4f} mm"
+        )
+        debug_log("")
 
         
     def generatePads(self, board):
@@ -1512,6 +1986,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
                             'width': self.mm(size.x),
                             'height': self.mm(size.y),
                             'angle': angle,
+                            'footprint': module.GetReference(),
                             'pad': pad
                         })
 
@@ -1521,27 +1996,33 @@ class StencilGenerator(pcbnew.ActionPlugin):
         # STEP 1: Optimize narrow pads first (expand them to use available space)
         # This must be done BEFORE group shrinking to prevent conflicts
         groupShrinkFactors = self.optimizeNarrowPads(padsInfo, {})
-        
-        # STEP 2: Apply group shrinking for closely packed pads
-        # Only apply to pads that weren't optimized, or if shrinking is more restrictive
-        pad_groups = self.findPadGroups(padsInfo)
-        for groupIndices in pad_groups:
-            shrinkFactors = self.calculateGroupShrinkFactor(groupIndices, padsInfo)
-            for idx in groupIndices:
-                # Apply shrinking only if pad hasn't been optimized yet
-                if idx not in groupShrinkFactors:
-                    groupShrinkFactors[idx] = shrinkFactors
-                else:
-                    # For optimized pads: only apply group shrinking if it's MORE restrictive
-                    # This preserves narrow pad optimization while still respecting minimum gaps
-                    existingFactors = groupShrinkFactors[idx]
-                    
-                    # Only override optimization if group shrinking is more restrictive in BOTH dimensions
-                    if (shrinkFactors['width'] < existingFactors['width'] and 
-                        shrinkFactors['height'] < existingFactors['height']):
-                        # Group shrinking is more restrictive, use it
-                        groupShrinkFactors[idx] = shrinkFactors
-                    # else: keep the existing optimized factors (they provide better pad visibility)
+        factorsAfterStep1 = self.cloneFactorMap(groupShrinkFactors)
+
+        # STEP 2: Skip legacy global group-shrink.
+        # It over-constrains many unrelated pads and blocks desired growth.
+        # Hard safety is guaranteed later by enforceGlobalMinGap().
+        factorsAfterStep2 = self.cloneFactorMap(groupShrinkFactors)
+
+        # STEP 2b: Best-effort raise tiny pads toward minPadSize, but never violate min gap
+        groupShrinkFactors = self.applySoftMinPadSize(padsInfo, groupShrinkFactors)
+        factorsAfterStep2b = self.cloneFactorMap(groupShrinkFactors)
+
+        # STEP 2c: Keep pin-like 3..30-pad footprint clusters uniform and grow as a set
+        groupShrinkFactors = self.applyUniformSmallFootprintScaling(padsInfo, groupShrinkFactors)
+        factorsAfterStep2c = self.cloneFactorMap(groupShrinkFactors)
+
+        # STEP 2d: Hard global safety pass - always enforce minGabBetweenPads
+        groupShrinkFactors = self.enforceGlobalMinGap(padsInfo, groupShrinkFactors)
+
+        # Diagnostic logging (per footprint/pad): what changed and why
+        self.logPadScalingDiagnostics(
+            padsInfo,
+            factorsAfterStep1,
+            factorsAfterStep2,
+            factorsAfterStep2b,
+            factorsAfterStep2c,
+            groupShrinkFactors
+        )
 
         # STEP 3: Generate SCAD code for all pads using calculated factors
         for i, pad_info in enumerate(padsInfo):
