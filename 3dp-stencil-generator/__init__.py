@@ -11,13 +11,13 @@ import configparser
 
 
 # === Global configuration ===
-BUILD = "138"             # Build number
+BUILD = "147"             # Build number
 workDir = "stencil"       # Working folder name
 frontCopperPads = True    # Generate front copper pads
 backCopperPads = False    # Generate back copper pads
 copperSelection = 0       # 0 = front, 1 = back
-minGabBetweenPads = 0.30  # Minimum mask width (mm) between pads
-minPadSize = 0.50         # Minimum pad size (mm) after shrinking
+minGapBetweenPads = 0.30  # Minimum mask width (mm) between pads
+minPadWidth = 0.50        # Minimum pad width (mm) after shrinking
 narrowPadThreshold = 1.0  # Threshold for narrow pad optimization (mm)
 pcbClearence = 0.15       # PCB clearance (mm) - moves outline outward from Edge.Cuts
 prySlotPosition = 4       # Pry slot position: 0=Top, 1=Right, 2=Bottom, 3=Left, 4=None
@@ -26,7 +26,7 @@ import wx
 
 def loadConfigFromIni(projectDir):
     """Load configuration from 3dpStencil.ini file"""
-    global minGabBetweenPads, minPadSize, pcbClearence, narrowPadThreshold, prySlotPosition
+    global minGapBetweenPads, minPadWidth, pcbClearence, narrowPadThreshold, prySlotPosition
     
     config_file = os.path.join(projectDir, workDir, "3dpStencil.ini")
     
@@ -41,15 +41,15 @@ def loadConfigFromIni(projectDir):
             settings = config['StencilSettings']
             
             # Load values with validation
-            if 'minGabBetweenPads' in settings:
-                value = float(settings['minGabBetweenPads'])
+            if 'minGapBetweenPads' in settings:
+                value = float(settings['minGapBetweenPads'])
                 if 0.01 <= value <= 5.0:  # Reasonable range
-                    minGabBetweenPads = value
+                    minGapBetweenPads = value
             
-            if 'minPadSize' in settings:
-                value = float(settings['minPadSize'])
+            if 'minPadWidth' in settings:
+                value = float(settings['minPadWidth'])
                 if 0.01 <= value <= 10.0:  # Reasonable range
-                    minPadSize = value
+                    minPadWidth = value
             
             if 'pcbCearance' in settings:
                 value = float(settings['pcbCearance'])
@@ -66,16 +66,16 @@ def loadConfigFromIni(projectDir):
                 if 0 <= value <= 4:  # 0=Top, 1=Right, 2=Bottom, 3=Left, 4=None
                     prySlotPosition = value
         
-        # make sure minPadSize is not smaller than narrowPadThreshold
-        if minPadSize < narrowPadThreshold:
-            minPadSize = narrowPadThreshold
+        # make sure minPadWidth is not smaller than narrowPadThreshold
+        if minPadWidth < narrowPadThreshold:
+            minPadWidth = narrowPadThreshold
                     
     except Exception as e:
         # If any error occurs, just use default values
         print(f"Warning: Could not load config from {config_file}: {e}")
 
 
-def saveConfigToIni(projectDir, maskWidth, padSize, clearance, narrowThreshold, prySlot):
+def saveConfigToIni(projectDir, maskWidth, padWidth, clearance, narrowThreshold, prySlot):
     """Save configuration to 3dpStencil.ini file"""
     config_dir = os.path.join(projectDir, workDir)
     config_file = os.path.join(config_dir, "3dpStencil.ini")
@@ -87,8 +87,8 @@ def saveConfigToIni(projectDir, maskWidth, padSize, clearance, narrowThreshold, 
         # Create config
         config = configparser.ConfigParser()
         config['StencilSettings'] = {
-            'minGabBetweenPads': str(maskWidth),
-            'minPadSize': str(padSize),
+            'minGapBetweenPads': str(maskWidth),
+            'minPadWidth': str(padWidth),
             'pcbCearance': str(clearance),
             'narrowPadThreshold': str(narrowThreshold),
             'prySlotPosition': str(prySlot)
@@ -108,41 +108,96 @@ class StencilParametersDialog(wx.Dialog):
         super().__init__(parent, title="Stencil Generator Parameters")
         sizer = wx.BoxSizer(wx.VERTICAL)
 
+        def create_help_button(help_text):
+            btn = wx.Button(self, label="?", size=(24, 24), style=wx.BU_EXACTFIT)
+            btn.SetToolTip("Click for field help")
+            btn.Bind(
+                wx.EVT_BUTTON,
+                lambda evt, text=help_text: wx.MessageBox(text, "Field Help", wx.OK | wx.ICON_INFORMATION)
+            )
+            return btn
+
+        def add_label_with_help(label_text, help_text):
+            row = wx.BoxSizer(wx.HORIZONTAL)
+            label = wx.StaticText(self, label=label_text)
+            row.Add(label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 6)
+            row.AddStretchSpacer(1)
+            row.Add(create_help_button(help_text), 0, wx.ALIGN_CENTER_VERTICAL)
+            sizer.Add(row, 0, wx.ALL | wx.EXPAND, 5)
+            return label
+
         build_label = wx.StaticText(self, label=f"BUILD {BUILD}")
         build_font = build_label.GetFont()
         build_font.MakeBold()
         build_label.SetFont(build_font)
         sizer.Add(build_label, 0, wx.ALL, 5)
 
+        copper_tip = (
+            "Select which copper layer is used to collect SMD pads for stencil apertures."
+        )
         self.copper_side_rb = wx.RadioBox(
             self, label="Copper side", choices=["Front", "Back"], majorDimension=1, style=wx.RA_SPECIFY_ROWS)
         self.copper_side_rb.SetSelection(0 if frontCopperPads else 1)
-        sizer.Add(self.copper_side_rb, 0, wx.ALL, 5)
+        self.copper_side_rb.SetToolTip(copper_tip)
+        copper_row = wx.BoxSizer(wx.HORIZONTAL)
+        copper_row.Add(self.copper_side_rb, 1, wx.ALL | wx.EXPAND, 5)
+        copper_row.Add(create_help_button(copper_tip), 0, wx.ALIGN_TOP | wx.TOP, 7)
+        sizer.Add(copper_row, 0, wx.EXPAND)
         
-        # Minimum gab between pads width
-        sizer.Add(wx.StaticText(self, label="Minimum Gab Between Pads (mm):"), 0, wx.ALL, 5)
-        self.maskWidth_ctrl = wx.TextCtrl(self, value=str(minGabBetweenPads))
+        # Minimum gap between pads width
+        mask_tip = (
+            "Hard minimum gap (material bridge) between neighboring apertures.\n"
+            "Higher values increase safety but can force more pad shrinking."
+        )
+        mask_label = add_label_with_help("Minimum Gap Between Pads (mm):", mask_tip)
+        mask_label.SetToolTip(mask_tip)
+        self.maskWidth_ctrl = wx.TextCtrl(self, value=str(minGapBetweenPads))
+        self.maskWidth_ctrl.SetToolTip(mask_tip)
         sizer.Add(self.maskWidth_ctrl, 0, wx.ALL|wx.EXPAND, 5)
         
-        # Minimum pad size
-        sizer.Add(wx.StaticText(self, label="Minimum pad size (mm):"), 0, wx.ALL, 5)
-        self.padSize_ctrl = wx.TextCtrl(self, value=str(minPadSize))
-        sizer.Add(self.padSize_ctrl, 0, wx.ALL|wx.EXPAND, 5)
-        
-        # PCB clearance
-        sizer.Add(wx.StaticText(self, label="PCB clearance (mm):"), 0, wx.ALL, 5)
-        self.clearance_ctrl = wx.TextCtrl(self, value=str(pcbClearence))
-        sizer.Add(self.clearance_ctrl, 0, wx.ALL|wx.EXPAND, 5)
+        # Minimum pad width
+        pad_width_tip = (
+            "Target minimum width for narrow pad optimization.\n"
+            "Must be >= Narrow Pad Threshold."
+        )
+        pad_width_label = add_label_with_help("Minimum pad width (mm):", pad_width_tip)
+        pad_width_label.SetToolTip(pad_width_tip)
+        self.padWidth_ctrl = wx.TextCtrl(self, value=str(minPadWidth))
+        self.padWidth_ctrl.SetToolTip(pad_width_tip)
+        sizer.Add(self.padWidth_ctrl, 0, wx.ALL|wx.EXPAND, 5)
         
         # Narrow pad threshold
-        sizer.Add(wx.StaticText(self, label="Narrow Pad Threshold (mm):"), 0, wx.ALL, 5)
+        narrow_tip = (
+            "Pads with width below this threshold are treated as narrow and optimized first.\n"
+            "Must be <= Minimum pad width."
+        )
+        narrow_label = add_label_with_help("Narrow Pad Threshold (mm):", narrow_tip)
+        narrow_label.SetToolTip(narrow_tip)
         self.narrowThreshold_ctrl = wx.TextCtrl(self, value=str(narrowPadThreshold))
+        self.narrowThreshold_ctrl.SetToolTip(narrow_tip)
         sizer.Add(self.narrowThreshold_ctrl, 0, wx.ALL|wx.EXPAND, 5)
+
+        # PCB clearance
+        clearance_tip = (
+            "Outline/frame offset around PCB geometry.\n"
+            "Higher values increase stencil clearance from board edges."
+        )
+        clearance_label = add_label_with_help("PCB clearance (mm):", clearance_tip)
+        clearance_label.SetToolTip(clearance_tip)
+        self.clearance_ctrl = wx.TextCtrl(self, value=str(pcbClearence))
+        self.clearance_ctrl.SetToolTip(clearance_tip)
+        sizer.Add(self.clearance_ctrl, 0, wx.ALL|wx.EXPAND, 5)
         
         # Pry slot position
-        sizer.Add(wx.StaticText(self, label="Pry Slot Position:"), 0, wx.ALL, 5)
+        pry_tip = (
+            "Select where the pry slot is placed on the stencil edge.\n"
+            "Top, Right, Bottom, Left or None."
+        )
+        pry_label = add_label_with_help("Pry Slot Position:", pry_tip)
+        pry_label.SetToolTip(pry_tip)
         self.prySlot_ctrl = wx.Choice(self, choices=["Top", "Right", "Bottom", "Left", "None"])
         self.prySlot_ctrl.SetSelection(prySlotPosition)
+        self.prySlot_ctrl.SetToolTip(pry_tip)
         sizer.Add(self.prySlot_ctrl, 0, wx.ALL|wx.EXPAND, 5)
         
         # OK and Cancel buttons
@@ -162,21 +217,21 @@ class StencilParametersDialog(wx.Dialog):
         try:
             copperSelection = self.copper_side_rb.GetSelection()
             maskWidth = float(self.maskWidth_ctrl.GetValue())
-            padSize = float(self.padSize_ctrl.GetValue())
-            clearance = float(self.clearance_ctrl.GetValue())
+            padWidth = float(self.padWidth_ctrl.GetValue())
             narrowThreshold = float(self.narrowThreshold_ctrl.GetValue())
+            clearance = float(self.clearance_ctrl.GetValue())
             
-            # NIEUWE VALIDATIE: Zorg dat minPadSize nooit kleiner is dan narrowPadThreshold
-            if padSize < narrowThreshold:
-                wx.MessageBox(f"Minimum pad size ({padSize}) cannot be smaller than narrow pad threshold ({narrowThreshold})!", "Validation Error")
+            # Zorg dat minPadWidth nooit kleiner is dan narrowPadThreshold
+            if padWidth < narrowThreshold:
+                wx.MessageBox(f"Minimum pad width ({padWidth}) cannot be smaller than narrow pad threshold ({narrowThreshold})!", "Validation Error")
                 return None
             
             return {
                 'copperSelection': copperSelection,
                 'frontCopperPads': copperSelection == 0,
                 'backCopperPads': copperSelection == 1,
-                'minGabBetweenPads': maskWidth,
-                'minPadSize': padSize,
+                'minGapBetweenPads': maskWidth,
+                'minPadWidth': padWidth,
                 'pcbCearance': clearance,
                 'narrowPadThreshold': narrowThreshold,
                 'prySlotPosition': self.prySlot_ctrl.GetSelection()
@@ -219,12 +274,12 @@ class StencilGenerator(pcbnew.ActionPlugin):
         if dlg.ShowModal() == wx.ID_OK:
             values = dlg.getValues()
             if values:
-                global frontCopperPads, backCopperPads, minGabBetweenPads, minPadSize, pcbClearence, copperSelection, narrowPadThreshold, prySlotPosition
+                global frontCopperPads, backCopperPads, minGapBetweenPads, minPadWidth, pcbClearence, copperSelection, narrowPadThreshold, prySlotPosition
                 copperSelection = values['copperSelection']
                 frontCopperPads = values['frontCopperPads']
                 backCopperPads = values['backCopperPads']
-                minGabBetweenPads = values['minGabBetweenPads']
-                minPadSize = values['minPadSize']
+                minGapBetweenPads = values['minGapBetweenPads']
+                minPadWidth = values['minPadWidth']
                 narrowPadThreshold = values['narrowPadThreshold']
                 pcbClearence = values['pcbCearance']
                 prySlotPosition = values['prySlotPosition']
@@ -261,7 +316,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
 
             # Load configuration from INI file
             loadConfigFromIni(projectDir)
-            log(f"Config loaded - maskWidth: {minGabBetweenPads}, padSize: {minPadSize}, narrowPadThreshold: {narrowPadThreshold}, clearance: {pcbClearence}")
+            log(f"Config loaded - maskWidth: {minGapBetweenPads}, minPadWidth: {minPadWidth}, narrowPadThreshold: {narrowPadThreshold}, clearance: {pcbClearence}")
 
             # Show parameter dialog
             log("Showing parameters dialog")
@@ -270,7 +325,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
                 return  # User cancelled, exit
 
             # Save configuration to INI file
-            saveConfigToIni(projectDir, minGabBetweenPads, minPadSize, pcbClearence, narrowPadThreshold, prySlotPosition)
+            saveConfigToIni(projectDir, minGapBetweenPads, minPadWidth, pcbClearence, narrowPadThreshold, prySlotPosition)
             log("Configuration saved to INI file")
 
             baseFilename = re.sub(r'\.[^.]*$', '', os.path.basename(projectFile))
@@ -332,8 +387,8 @@ class StencilGenerator(pcbnew.ActionPlugin):
         scad = "// KiCad Stencil Generator\n"
         scad += f"// Generated on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
         scad += f"// File: {scadFilename}\n"
-        scad += f"// minGabBetweenPads: {minGabBetweenPads} mm\n"
-        scad += f"// minPadSize: {minPadSize} mm\n"
+        scad += f"// minGapBetweenPads: {minGapBetweenPads} mm\n"
+        scad += f"// minPadWidth: {minPadWidth} mm\n"
         scad += f"// pcbClearence: {pcbClearence} mm\n\n"
 
         scad += "// Parameters (adjust as needed)\n"
@@ -1082,7 +1137,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
         optimizedFactors = groupShrinkFactors.copy()
         narrowPadsFound = 0
         actuallyOptimized = 0
-        cappedAtMinPadSize = 0
+        cappedAtMinPadWidth = 0
         
         # Only log header if we find narrow pads
         headerLogged = False
@@ -1101,10 +1156,15 @@ class StencilGenerator(pcbnew.ActionPlugin):
                 wasOptimized = False
                 wasCapped = False
                 
-                # Try to optimize width if it's narrow (rotation-aware, gap-safe binary search)
-                if pad_info['width'] < narrowPadThreshold:
+                # Width is canonicalized as the smallest pad dimension.
+                # Narrow-pad optimization therefore targets width only.
+                optimizeWidth = pad_info['width'] < narrowPadThreshold
+                optimizeHeight = False
+
+                # Try to optimize width if needed (rotation-aware, gap-safe binary search)
+                if optimizeWidth:
                     if pad_info['width'] > 0:
-                        targetWidthFactor = minPadSize / pad_info['width']
+                        targetWidthFactor = minPadWidth / pad_info['width']
                     else:
                         targetWidthFactor = currentFactors['width']
 
@@ -1128,15 +1188,15 @@ class StencilGenerator(pcbnew.ActionPlugin):
                         currentFactors['width'] = best
                         wasOptimized = True
                         
-                        # Check if we were capped at minPadSize
+                        # Check if we were capped at minPadWidth
                         finalWidth = pad_info['width'] * currentFactors['width']
-                        if finalWidth >= minPadSize - 1e-6:
+                        if finalWidth >= minPadWidth - 1e-6:
                             wasCapped = True
                 
-                # Try to optimize height if it's narrow (rotation-aware, gap-safe binary search)
-                if pad_info['height'] < narrowPadThreshold:
+                # Try to optimize height if needed (rotation-aware, gap-safe binary search)
+                if optimizeHeight:
                     if pad_info['height'] > 0:
-                        targetHeightFactor = minPadSize / pad_info['height']
+                        targetHeightFactor = minPadWidth / pad_info['height']
                     else:
                         targetHeightFactor = currentFactors['height']
 
@@ -1160,9 +1220,9 @@ class StencilGenerator(pcbnew.ActionPlugin):
                         currentFactors['height'] = best
                         wasOptimized = True
                         
-                        # Check if we were capped at minPadSize
+                        # Check if we were capped at minPadWidth
                         finalHeight = pad_info['height'] * currentFactors['height']
-                        if finalHeight >= minPadSize - 1e-6:
+                        if finalHeight >= minPadWidth - 1e-6:
                             wasCapped = True
                 
                 # Only log if pad was actually optimized
@@ -1170,13 +1230,13 @@ class StencilGenerator(pcbnew.ActionPlugin):
                     if not headerLogged:
                         debug_log("=== NARROW PAD OPTIMIZATION ===")
                         debug_log(f"narrowPadThreshold: {narrowPadThreshold} mm")
-                        debug_log(f"minPadSize (max limit): {minPadSize} mm")
-                        debug_log(f"minGabBetweenPads: {minGabBetweenPads} mm")
+                        debug_log(f"minPadWidth (max limit): {minPadWidth} mm")
+                        debug_log(f"minGapBetweenPads: {minGapBetweenPads} mm")
                         headerLogged = True
                     
                     actuallyOptimized += 1
                     if wasCapped:
-                        cappedAtMinPadSize += 1
+                        cappedAtMinPadWidth += 1
                         
                     optimizedFactors[i] = currentFactors
                     
@@ -1188,13 +1248,13 @@ class StencilGenerator(pcbnew.ActionPlugin):
                     debug_log(f"  OPTIMIZED: {pad_info['width']:.3f}x{pad_info['height']:.3f} -> {finalWidth:.3f}x{finalHeight:.3f}")
                     debug_log(f"  Factors: width={currentFactors['width']:.3f}, height={currentFactors['height']:.3f}")
                     if wasCapped:
-                        debug_log(f"  NOTE: Capped at minPadSize limit ({minPadSize} mm)")
+                        debug_log(f"  NOTE: Capped at minPadWidth limit ({minPadWidth} mm)")
         
         if headerLogged:
             debug_log(f"=== OPTIMIZATION SUMMARY ===")
             debug_log(f"Narrow pads found: {narrowPadsFound}, Actually optimized: {actuallyOptimized}")
-            if cappedAtMinPadSize > 0:
-                debug_log(f"Pads capped at minPadSize limit: {cappedAtMinPadSize}")
+            if cappedAtMinPadWidth > 0:
+                debug_log(f"Pads capped at minPadWidth limit: {cappedAtMinPadWidth}")
             debug_log("")  # Empty line for readability
         
         return optimizedFactors
@@ -1202,13 +1262,13 @@ class StencilGenerator(pcbnew.ActionPlugin):
         
     def calculateMaxPadDimension(self, targetPad, allPads, targetIndex, dimension):
         """
-        Calculate maximum possible dimension for a narrow pad while respecting minGabBetweenPads.
+        Calculate maximum possible dimension for a narrow pad while respecting minGapBetweenPads.
         
         This function implements intelligent directional expansion:
-        - If space available in both directions: expand symmetrically up to minPadSize
-        - If space only in one direction: expand toward that direction up to minPadSize  
+        - If space available in both directions: expand symmetrically up to minPadWidth
+        - If space only in one direction: expand toward that direction up to minPadWidth  
         - If no space in either direction: keep original size
-        - Always respect minGabBetweenPads constraints with neighboring pads
+        - Always respect minGapBetweenPads constraints with neighboring pads
         
         Args:
             targetPad: Dictionary with pad info (x, y, width, height, angle)
@@ -1217,7 +1277,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
             dimension: 'width' or 'height' - which dimension to optimize
             
         Returns:
-            float: Maximum safe dimension size (capped at minPadSize)
+            float: Maximum safe dimension size (capped at minPadWidth)
         """
         import math
         
@@ -1226,8 +1286,8 @@ class StencilGenerator(pcbnew.ActionPlugin):
         # Get original dimension value
         originalDimension = targetPad[dimension]
         
-        # Target size is minPadSize for narrow pad optimization
-        targetSize = minPadSize
+        # Target size is minPadWidth for narrow pad optimization
+        targetSize = minPadWidth
         
         # If already at or above target, no optimization needed
         if originalDimension >= targetSize:
@@ -1251,7 +1311,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
             if dimension == 'width':
                 # For width optimization, check horizontal constraints
                 # Only consider pads that overlap vertically (could interfere horizontally)
-                verticalOverlapThreshold = (pad['height'] + targetPad['height']) / 2 + minGabBetweenPads
+                verticalOverlapThreshold = (pad['height'] + targetPad['height']) / 2 + minGapBetweenPads
                 
                 if abs(dy) < verticalOverlapThreshold:
                     # This pad could constrain horizontal expansion
@@ -1259,8 +1319,8 @@ class StencilGenerator(pcbnew.ActionPlugin):
                     # Calculate current edge-to-edge gap in X direction
                     currentGapX = abs(dx) - (pad['width'] + targetPad['width']) / 2
                     
-                    # Calculate maximum expansion possible before violating minGabBetweenPads
-                    maxExpansionTowardThisPad = max(0, currentGapX - minGabBetweenPads)
+                    # Calculate maximum expansion possible before violating minGapBetweenPads
+                    maxExpansionTowardThisPad = max(0, currentGapX - minGapBetweenPads)
                     
                     # Determine which direction this pad constrains
                     if dx > 0:
@@ -1281,7 +1341,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
             else:  # dimension == 'height'
                 # For height optimization, check vertical constraints
                 # Only consider pads that overlap horizontally (could interfere vertically)
-                horizontalOverlapThreshold = (pad['width'] + targetPad['width']) / 2 + minGabBetweenPads
+                horizontalOverlapThreshold = (pad['width'] + targetPad['width']) / 2 + minGapBetweenPads
                 
                 if abs(dx) < horizontalOverlapThreshold:
                     # This pad could constrain vertical expansion
@@ -1289,8 +1349,8 @@ class StencilGenerator(pcbnew.ActionPlugin):
                     # Calculate current edge-to-edge gap in Y direction
                     currentGapY = abs(dy) - (pad['height'] + targetPad['height']) / 2
                     
-                    # Calculate maximum expansion possible before violating minGabBetweenPads
-                    maxExpansionTowardThisPad = max(0, currentGapY - minGabBetweenPads)
+                    # Calculate maximum expansion possible before violating minGapBetweenPads
+                    maxExpansionTowardThisPad = max(0, currentGapY - minGapBetweenPads)
                     
                     # Determine which direction this pad constrains
                     if dy > 0:
@@ -1354,8 +1414,8 @@ class StencilGenerator(pcbnew.ActionPlugin):
             finalDimension = originalDimension + expansion
             expansionStrategy = "negative only"
         
-        # Apply absolute maximum limit (never exceed minPadSize)
-        finalDimension = min(finalDimension, minPadSize)
+        # Apply absolute maximum limit (never exceed minPadWidth)
+        finalDimension = min(finalDimension, minPadWidth)
         
         # Debug logging for troubleshooting
         if finalDimension > originalDimension:
@@ -1365,8 +1425,8 @@ class StencilGenerator(pcbnew.ActionPlugin):
             debug_log(f"    Positive constraints: {len(positiveConstraints)}, max expansion: {maxPositiveExpansion:.3f}mm")
             debug_log(f"    Negative constraints: {len(negativeConstraints)}, max expansion: {maxNegativeExpansion:.3f}mm")
             debug_log(f"    Strategy: {expansionStrategy}")
-            if finalDimension >= minPadSize:
-                debug_log(f"    NOTE: Achieved target size ({minPadSize}mm)")
+            if finalDimension >= minPadWidth:
+                debug_log(f"    NOTE: Achieved target size ({minPadWidth}mm)")
         
         return finalDimension
 
@@ -1422,7 +1482,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
                         # Consider pads close if they're within 2x the minimum mask width
                         maxDimension = max(groupPad['width'], groupPad['height'], 
                                           otherPad['width'], otherPad['height'])
-                        threshold = maxDimension + minGabBetweenPads * 2
+                        threshold = maxDimension + minGapBetweenPads * 2
                         
                         if distance < threshold:
                             currentGroup.append(j)
@@ -1473,23 +1533,23 @@ class StencilGenerator(pcbnew.ActionPlugin):
                 gapY = dyAbs - (projY1 + projY2)
 
                 # Violation only when BOTH axes are below required minimum.
-                if gapX < minGabBetweenPads and gapY < minGabBetweenPads:
+                if gapX < minGapBetweenPads and gapY < minGapBetweenPads:
                     denomX = projX1 + projX2
                     denomY = projY1 + projY2
                     sx = -1e9
                     sy = -1e9
 
                     if denomX > 1e-9:
-                        sx = (dxAbs - minGabBetweenPads) / denomX
+                        sx = (dxAbs - minGapBetweenPads) / denomX
                     if denomY > 1e-9:
-                        sy = (dyAbs - minGabBetweenPads) / denomY
+                        sy = (dyAbs - minGapBetweenPads) / denomY
 
                     # Need to satisfy at least one axis -> use the less restrictive bound.
                     requiredScale = max(sx, sy)
                     requiredScale = max(0.01, min(1.0, requiredScale))
                     minScale = min(minScale, requiredScale)
         
-        # Gap has priority over minPadSize for group shrinking.
+        # Gap has priority over minPadWidth for group shrinking.
         minScale = max(0.01, min(1.0, minScale))
         
         return {
@@ -1507,7 +1567,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
         return self.projectPadDimension(scaled_pad, direction_x, direction_y)
 
     def isPadFactorGapSafe(self, padIndex, candidateFactors, padsInfo, allFactors):
-        """Check whether candidate factors for one pad preserve minGabBetweenPads to all other pads."""
+        """Check whether candidate factors for one pad preserve minGapBetweenPads to all other pads."""
         targetPad = padsInfo[padIndex]
 
         targetProjX = self.getScaledPadProjection(targetPad, candidateFactors, 1.0, 0.0)
@@ -1528,15 +1588,15 @@ class StencilGenerator(pcbnew.ActionPlugin):
             gapY = dy - (targetProjY + otherProjY)
 
             # Pair is unsafe only if both axes are below minimum web.
-            if gapX < minGabBetweenPads and gapY < minGabBetweenPads:
+            if gapX < minGapBetweenPads and gapY < minGapBetweenPads:
                 return False
 
         return True
 
-    def applySoftMinPadSize(self, padsInfo, allFactors):
+    def applySoftMinPadWidth(self, padsInfo, allFactors):
         """
-        Try to increase very small pads toward minPadSize without ever violating minGabBetweenPads.
-        minGabBetweenPads always has priority; minPadSize is a best-effort target.
+        Try to increase very small pads toward minPadWidth without ever violating minGapBetweenPads.
+        minGapBetweenPads always has priority; minPadWidth is a best-effort target.
         """
         debug_log = self.get_debug_log_function()
 
@@ -1557,10 +1617,15 @@ class StencilGenerator(pcbnew.ActionPlugin):
             currentFactors = adjustedFactors.get(i, {'width': 1.0, 'height': 1.0}).copy()
             changed = False
 
-            # WIDTH: try to raise to minPadSize, but only if gap-safe
+            # Width is canonicalized as the smallest pad dimension.
+            # Soft minimum pass therefore targets width only.
+            optimizeWidth = True
+            optimizeHeight = False
+
+            # WIDTH: try to raise to minPadWidth, but only if gap-safe
             currentWidth = padInfo['width'] * currentFactors['width']
-            if currentWidth < minPadSize and padInfo['width'] > 0:
-                targetWidthFactor = minPadSize / padInfo['width']
+            if optimizeWidth and currentWidth < minPadWidth and padInfo['width'] > 0:
+                targetWidthFactor = minPadWidth / padInfo['width']
                 low = currentFactors['width']
                 high = targetWidthFactor
                 best = low
@@ -1578,10 +1643,10 @@ class StencilGenerator(pcbnew.ActionPlugin):
                     currentFactors['width'] = best
                     changed = True
 
-            # HEIGHT: try to raise to minPadSize, but only if gap-safe
+            # HEIGHT: try to raise to minPadWidth, but only if gap-safe
             currentHeight = padInfo['height'] * currentFactors['height']
-            if currentHeight < minPadSize and padInfo['height'] > 0:
-                targetHeightFactor = minPadSize / padInfo['height']
+            if optimizeHeight and currentHeight < minPadWidth and padInfo['height'] > 0:
+                targetHeightFactor = minPadWidth / padInfo['height']
                 low = currentFactors['height']
                 high = targetHeightFactor
                 best = low
@@ -1604,8 +1669,8 @@ class StencilGenerator(pcbnew.ActionPlugin):
                 padsRaised += 1
 
         if padsRaised > 0:
-            debug_log("=== SOFT minPadSize PASS ===")
-            debug_log(f"Pads raised toward minPadSize without violating minGabBetweenPads: {padsRaised}")
+            debug_log("=== SOFT minPadWidth PASS ===")
+            debug_log(f"Pads raised toward minPadWidth without violating minGapBetweenPads: {padsRaised}")
             debug_log("")
 
         return adjustedFactors
@@ -1662,7 +1727,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
 
     def enforceGlobalMinGap(self, padsInfo, allFactors, maxIterations=20):
         """
-        Hard safety pass: enforce minGabBetweenPads globally for all pad pairs.
+        Hard safety pass: enforce minGapBetweenPads globally for all pad pairs.
         If needed, shrink violating pads until all pairwise constraints are satisfied.
         """
         adjustedFactors = allFactors.copy()
@@ -1691,15 +1756,15 @@ class StencilGenerator(pcbnew.ActionPlugin):
                     gapX = dx - currentX
                     gapY = dy - currentY
 
-                    if gapX < minGabBetweenPads and gapY < minGabBetweenPads:
+                    if gapX < minGapBetweenPads and gapY < minGapBetweenPads:
                         hadViolation = True
 
                         sx = -1e9
                         sy = -1e9
                         if currentX > 1e-9:
-                            sx = (dx - minGabBetweenPads) / currentX
+                            sx = (dx - minGapBetweenPads) / currentX
                         if currentY > 1e-9:
-                            sy = (dy - minGabBetweenPads) / currentY
+                            sy = (dy - minGapBetweenPads) / currentY
 
                         # At least one axis must satisfy min gap.
                         pairScale = max(sx, sy)
@@ -1726,7 +1791,7 @@ class StencilGenerator(pcbnew.ActionPlugin):
         """
         Make small SMD footprints scale uniformly per axis.
         This prevents one pin pad from growing while neighbors in the same package do not.
-        minGabBetweenPads remains the hard constraint.
+        minGapBetweenPads remains the hard constraint.
         """
         debug_log = self.get_debug_log_function()
 
@@ -1754,11 +1819,11 @@ class StencilGenerator(pcbnew.ActionPlugin):
                 adjustedFactors[i] = factors
 
             # Then grow uniformly as far as safely possible.
-            # Target is to bring the smallest pad in the group toward minPadSize.
+            # Target is to bring the smallest pad in the group toward minPadWidth.
             minOriginalW = min([padsInfo[i]['width'] for i in indices if padsInfo[i]['width'] > 0])
             minOriginalH = min([padsInfo[i]['height'] for i in indices if padsInfo[i]['height'] > 0])
-            targetCommonW = max(currentCommonW, minPadSize / minOriginalW)
-            targetCommonH = max(currentCommonH, minPadSize / minOriginalH)
+            targetCommonW = max(currentCommonW, minPadWidth / minOriginalW)
+            targetCommonH = max(currentCommonH, minPadWidth / minOriginalH)
 
             lowW = currentCommonW
             highW = targetCommonW
@@ -1841,12 +1906,12 @@ class StencilGenerator(pcbnew.ActionPlugin):
                 gapY = dy - (projAY + projBY)
 
                 # Only track directional gaps that are geometrically relevant.
-                if dy < (projAY + projBY + minGabBetweenPads):
+                if dy < (projAY + projBY + minGapBetweenPads):
                     minGapX = min(minGapX, gapX)
-                if dx < (projAX + projBX + minGabBetweenPads):
+                if dx < (projAX + projBX + minGapBetweenPads):
                     minGapY = min(minGapY, gapY)
 
-                if gapX < minGabBetweenPads - 1e-6 and gapY < minGabBetweenPads - 1e-6:
+                if gapX < minGapBetweenPads - 1e-6 and gapY < minGapBetweenPads - 1e-6:
                     violations += 1
 
         if minGapX == float('inf'):
@@ -1882,12 +1947,9 @@ class StencilGenerator(pcbnew.ActionPlugin):
                 if abs(finalF['width'] - 1.0) > eps or abs(finalF['height'] - 1.0) > eps:
                     changedIndices.append(i)
 
-            if not changedIndices:
-                continue
-
             debug_log(f"Footprint {footprint}: pads={len(indices)}, changed={len(changedIndices)}")
 
-            for i in changedIndices:
+            for i in indices:
                 padInfo = padsInfo[i]
 
                 f1 = self.getFactorsForPad(step1, i)
@@ -1908,12 +1970,12 @@ class StencilGenerator(pcbnew.ActionPlugin):
                 if (ff['width'] + eps) < f2c['width'] or (ff['height'] + eps) < f2c['height']:
                     reasons.append("global-gap-safety")
 
-                if padInfo['width'] < minPadSize:
-                    targetW = minPadSize / padInfo['width'] if padInfo['width'] > 0 else 1.0
+                if padInfo['width'] < minPadWidth:
+                    targetW = minPadWidth / padInfo['width'] if padInfo['width'] > 0 else 1.0
                     if ff['width'] + 1e-4 < targetW:
                         reasons.append("width-gap-limited")
-                if padInfo['height'] < minPadSize:
-                    targetH = minPadSize / padInfo['height'] if padInfo['height'] > 0 else 1.0
+                if padInfo['height'] < minPadWidth:
+                    targetH = minPadWidth / padInfo['height'] if padInfo['height'] > 0 else 1.0
                     if ff['height'] + 1e-4 < targetH:
                         reasons.append("height-gap-limited")
 
@@ -1924,17 +1986,24 @@ class StencilGenerator(pcbnew.ActionPlugin):
 
                 finalW = padInfo['width'] * ff['width']
                 finalH = padInfo['height'] * ff['height']
+                origW = padInfo['width']
+                origH = padInfo['height']
+                changed = abs(ff['width'] - 1.0) > eps or abs(ff['height'] - 1.0) > eps
+                changeLabel = "changed" if changed else "unchanged"
 
                 debug_log(
-                    f"  Pad {padNr}: factor W/H {ff['width']:.3f}/{ff['height']:.3f}, "
-                    f"size {finalW:.3f}x{finalH:.3f} mm, reason={','.join(reasons) if reasons else 'none'}"
+                    f"  Pad {padNr}: "
+                    f"Orig W/H {origW:.3f}/{origH:.3f} mm -> "
+                    f"New W/H {finalW:.3f}/{finalH:.3f} mm, "
+                    f"factor W/H {ff['width']:.3f}/{ff['height']:.3f}, "
+                    f"status={changeLabel}, reason={','.join(reasons) if reasons else 'none'}"
                 )
 
         gapSummary = self.calculateFinalGapSummary(padsInfo, finalFactors)
         debug_log(
             f"Final gap summary: violations={gapSummary['violations']}, "
             f"minGapX={gapSummary['minGapX']:.4f} mm, minGapY={gapSummary['minGapY']:.4f} mm, "
-            f"required={minGabBetweenPads:.4f} mm"
+            f"required={minGapBetweenPads:.4f} mm"
         )
         debug_log("")
 
@@ -1975,6 +2044,15 @@ class StencilGenerator(pcbnew.ActionPlugin):
                         angle = pad.GetOrientation().AsDegrees()
                         x = self.mm(pos.x - centerX)
                         y = self.mm(pos.y - centerY)
+                        width = self.mm(size.x)
+                        height = self.mm(size.y)
+
+                        # Canonical dimensions for diagnostics/optimization:
+                        # Width = smallest side, Height = largest side.
+                        # If swapped, rotate +90° so geometry/orientation remains identical.
+                        if width > height:
+                            width, height = height, width
+                            angle += 90.0
                         
                         # Mirror X coordinate for back side
                         if backCopperPads:
@@ -1983,8 +2061,8 @@ class StencilGenerator(pcbnew.ActionPlugin):
                         padsInfo.append({
                             'x': x,
                             'y': y,
-                            'width': self.mm(size.x),
-                            'height': self.mm(size.y),
+                            'width': width,
+                            'height': height,
                             'angle': angle,
                             'footprint': module.GetReference(),
                             'pad': pad
@@ -2003,15 +2081,15 @@ class StencilGenerator(pcbnew.ActionPlugin):
         # Hard safety is guaranteed later by enforceGlobalMinGap().
         factorsAfterStep2 = self.cloneFactorMap(groupShrinkFactors)
 
-        # STEP 2b: Best-effort raise tiny pads toward minPadSize, but never violate min gap
-        groupShrinkFactors = self.applySoftMinPadSize(padsInfo, groupShrinkFactors)
+        # STEP 2b: Best-effort raise tiny pads toward minPadWidth, but never violate min gap
+        groupShrinkFactors = self.applySoftMinPadWidth(padsInfo, groupShrinkFactors)
         factorsAfterStep2b = self.cloneFactorMap(groupShrinkFactors)
 
         # STEP 2c: Keep pin-like 3..30-pad footprint clusters uniform and grow as a set
         groupShrinkFactors = self.applyUniformSmallFootprintScaling(padsInfo, groupShrinkFactors)
         factorsAfterStep2c = self.cloneFactorMap(groupShrinkFactors)
 
-        # STEP 2d: Hard global safety pass - always enforce minGabBetweenPads
+        # STEP 2d: Hard global safety pass - always enforce minGapBetweenPads
         groupShrinkFactors = self.enforceGlobalMinGap(padsInfo, groupShrinkFactors)
 
         # Diagnostic logging (per footprint/pad): what changed and why
